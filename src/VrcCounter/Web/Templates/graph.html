@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Edit graph</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <style>
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0e1013;color:#e7e9ee;font:15px system-ui}.wrap{max-width:1200px;margin:auto;padding:24px}.card{background:#151922;border:1px solid #283043;border-radius:14px;padding:18px;margin:14px 0}.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}label{display:grid;gap:5px}input,select{padding:8px;background:#10141c;color:white;border:1px solid #39445c;border-radius:8px}.btn,button{padding:8px 12px;background:#2d6cdf;color:#fff;border:0;border-radius:9px;text-decoration:none;cursor:pointer}.counterList{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px}.counterList label{display:flex}.chartwrap{height:420px;position:relative}.rangeInfo{color:#9aa8c2;margin:0 0 12px}.rangeInfo.warn{color:#f6c85f}
+  </style>
+</head>
+<body><main class="wrap">
+  <p><a class="btn" href="/">← Home</a></p>
+  <section class="card">
+    <div class="controls">
+      <label>Graph name<input id="name"></label>
+      <label>Range<select id="preset"><option value="all">All recorded history</option><option>10m</option><option>30m</option><option>1h</option><option>2h</option><option>5h</option><option>12h</option><option>1d</option><option>7d</option><option>30d</option><option>custom</option></select></label>
+      <label>Bucket<select id="bucket"><option>minute</option><option>hour</option><option>day</option></select></label>
+      <label>Mode<select id="mode"><option>total</option><option>delta</option></select></label>
+      <label>Graph type<select id="graphtype"><option>line</option><option>area</option><option>step</option><option>bar</option></select></label>
+      <label>Auto Y<select id="autoY"><option value="true">Yes</option><option value="false">No</option></select></label>
+      <label>Y minimum<input id="ymin" type="number" step="any"></label><label>Y maximum<input id="ymax" type="number" step="any"></label>
+      <label>Custom start<input id="customStart" type="datetime-local"></label><label>Custom end<input id="customEnd" type="datetime-local"></label>
+      <label>Auto refresh<select id="autoRefresh"><option value="true">Yes</option><option value="false">No</option></select></label>
+      <label>Refresh ms<input id="refreshMs" type="number"></label><label>Height px<input id="height" type="number" min="120" max="1200"></label>
+    </div>
+    <h3>Counters</h3>
+    <p><button type="button" id="allCounters">All</button> <button type="button" id="noCounters">None</button></p>
+    <div id="counters" class="counterList"></div>
+    <p><button id="save">Save graph</button> <button id="reset">Reset zoom</button></p>
+  </section>
+  <section class="card"><p id="rangeInfo" class="rangeInfo"></p><div id="chartwrap" class="chartwrap"><canvas id="chart"></canvas></div></section>
+</main>
+<script>
+const gid=new URLSearchParams(location.search).get('gid')||'g1';
+const colors=['#64a3ff','#ff7697','#58d6a8','#f6c85f','#b092ff','#ff9564'];
+let prefs,chart,timer,drawGeneration=0;
+const $=id=>document.getElementById(id);
+const toLocal=ms=>ms?new Date(ms-new Date(ms).getTimezoneOffset()*60000).toISOString().slice(0,16):'';
+const fmt=ms=>new Date(ms).toLocaleString();
+
+function makeSeriesQuery(p){
+  let end=Date.now(),span={"10m":6e5,"30m":18e5,"1h":36e5,"2h":72e5,"5h":18e6,"12h":432e5,"1d":864e5,"7d":6048e5,"30d":2592e6}[p.preset]||36e5,start=end-span;
+  if(p.preset==='custom'){start=p.custom_start_ms||start;end=p.custom_end_ms||end}
+  const q=new URLSearchParams({start_ms:start,end_ms:end,bucket:p.bucket,mode:p.mode});
+  if(p.preset==='all')q.set('all','true');
+  p.counters.forEach(x=>q.append('counter',x));
+  return q;
+}
+
+async function init(){
+  prefs=await fetch('/api/graph-prefs?gid='+encodeURIComponent(gid)).then(r=>r.json());
+  const names=await fetch('/api/counters').then(r=>r.json());
+  $('counters').innerHTML=names.map(n=>`<label><input type="checkbox" value="${n.replaceAll('&','&amp;').replaceAll('"','&quot;')}"> ${n}</label>`).join('');
+  for(const id of ['name','preset','bucket','mode','graphtype','height','refreshMs'])$(id).value={name:prefs.name,preset:prefs.preset,bucket:prefs.bucket,mode:prefs.mode,graphtype:prefs.graphtype,height:prefs.graph_height_px,refreshMs:prefs.auto_refresh_ms}[id];
+  if(!$('preset').value)$('preset').value='all';
+  $('autoY').value=String(prefs.autoY);$('autoRefresh').value=String(prefs.auto_refresh);$('ymin').value=prefs.ymin??'';$('ymax').value=prefs.ymax??'';$('customStart').value=toLocal(prefs.custom_start_ms);$('customEnd').value=toLocal(prefs.custom_end_ms);
+  for(const x of document.querySelectorAll('#counters input'))x.checked=prefs.counters.includes(x.value);
+  events();draw();
+}
+
+function collect(){return {...prefs,name:$('name').value,counters:[...document.querySelectorAll('#counters input:checked')].map(x=>x.value),preset:$('preset').value,bucket:$('bucket').value,mode:$('mode').value,graphtype:$('graphtype').value,autoY:$('autoY').value==='true',ymin:$('ymin').value===''?null:Number($('ymin').value),ymax:$('ymax').value===''?null:Number($('ymax').value),custom_start_ms:$('customStart').value?new Date($('customStart').value).getTime():null,custom_end_ms:$('customEnd').value?new Date($('customEnd').value).getTime():null,auto_refresh:$('autoRefresh').value==='true',auto_refresh_ms:Number($('refreshMs').value)||60000,graph_height_px:Number($('height').value)||320};}
+
+async function draw(){
+  const generation=++drawGeneration;
+  prefs=collect();$('chartwrap').style.height=Math.max(120,Math.min(1200,prefs.graph_height_px))+'px';
+  const d=await fetch('/api/series_multi?'+makeSeriesQuery(prefs)).then(r=>r.json());
+  if(generation!==drawGeneration)return;
+  const visibleEvents=d.series.reduce((n,s)=>n+s.eventCount,0);
+  const info=$('rangeInfo');
+  if(!prefs.counters.length){info.textContent='Select at least one counter.';info.classList.add('warn')}
+  else if(!visibleEvents){info.textContent=`No SQLite events in ${fmt(d.rangeStartMs)} – ${fmt(d.rangeEndMs)}. Choose “All recorded history” to see older data.`;info.classList.add('warn')}
+  else{info.textContent=`Showing ${visibleEvents.toLocaleString()} recorded events · ${fmt(d.rangeStartMs)} – ${fmt(d.rangeEndMs)}`;info.classList.remove('warn')}
+  const sets=d.series.map((s,i)=>({label:s.name,data:s.eventCount?s.points.map(x=>({x:x.t,y:x.v})):[],borderColor:colors[i%colors.length],backgroundColor:colors[i%colors.length]+'44',borderWidth:2,pointRadius:s.points.length<250?2:0,fill:prefs.graphtype==='area',stepped:prefs.graphtype==='step'}));
+  chart?.destroy();
+  chart=new Chart($('chart'),{type:prefs.graphtype==='bar'?'bar':'line',data:{datasets:sets},options:{animation:false,responsive:true,maintainAspectRatio:false,parsing:false,interaction:{mode:'nearest',intersect:false},plugins:{tooltip:{callbacks:{title:items=>items.length?fmt(items[0].parsed.x):''}},zoom:{zoom:{wheel:{enabled:true},pinch:{enabled:true},drag:{enabled:true,backgroundColor:'rgba(100,163,255,.16)'},mode:'x'},pan:{enabled:true,mode:'x'}}},scales:{x:{type:'linear',ticks:{maxTicksLimit:8,callback:v=>fmt(v)},title:{display:true,text:'Time'}},y:{beginAtZero:prefs.mode==='delta',min:prefs.autoY?undefined:prefs.ymin,max:prefs.autoY?undefined:prefs.ymax,title:{display:true,text:prefs.mode==='delta'?'Events per bucket':'Counter total'}}}}});
+  clearInterval(timer);if(prefs.auto_refresh)timer=setInterval(draw,Math.max(1000,prefs.auto_refresh_ms));
+}
+
+function events(){
+  $('allCounters').onclick=()=>{document.querySelectorAll('#counters input').forEach(x=>x.checked=true);draw()};
+  $('noCounters').onclick=()=>{document.querySelectorAll('#counters input').forEach(x=>x.checked=false);draw()};
+  $('reset').onclick=()=>chart?.resetZoom();
+  $('save').onclick=async()=>{prefs=collect();await fetch('/api/graph-prefs?gid='+encodeURIComponent(gid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(prefs)});await fetch('/api/graph-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'graph_prefs',gid})});draw()};
+  document.querySelectorAll('input,select').forEach(x=>x.addEventListener('change',draw));
+}
+init();
+</script></body></html>

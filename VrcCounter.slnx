@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VrcCounter/VrcCounter.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VrcCounter.Tests/VrcCounter.Tests.csproj" />
+  </Folder>
+</Solution>

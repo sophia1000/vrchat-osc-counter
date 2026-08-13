@@ -1,0 +1,36 @@
+# Personal runtime settings and counter history
+vrc_multi_param_counter.config.json
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Original Python application, old versions, and generated Python builds
+python/
+
+# Local backups and published application output
+backups/
+VrcCounter-CSharp/
+publish/
+
+# .NET build output
+**/bin/
+**/obj/
+TestResults/
+
+# WebView2 browser profiles
+*.WebView2/
+
+# IDE and operating-system files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
