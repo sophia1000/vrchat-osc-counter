@@ -144,8 +144,10 @@ public sealed partial class AppState
 
     public void SetRowHeight(int row, int height)
     {
+        if (row < 0) return;
+        height = Math.Clamp(height, 130, 1200);
         lock (_gate) { while (_config.HomeGraphRowHeights.Count <= row) _config.HomeGraphRowHeights.Add(0); _config.HomeGraphRowHeights[row] = height; }
-        Changed(new { type = "graph_row_height" });
+        Changed(new { type = "graph_row_height", row, height });
     }
 
     public void SetWindowSize(int width, int height)

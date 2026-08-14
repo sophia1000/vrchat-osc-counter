@@ -27,8 +27,9 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
             if (!cfg.Graphs.TryGetValue(gid, out var g)) continue;
             var row = graphIndex / cfg.HomeGraphsColumns;
             var savedRowHeight = row < cfg.HomeGraphRowHeights.Count ? cfg.HomeGraphRowHeights[row] : 0;
-            var height = Math.Clamp(savedRowHeight > 0 ? savedRowHeight : g.MiniHeightPx, 120, 1200);
-            graphs.Append($"<article class='graph' data-gid='{H(gid)}'><header><b>{H(g.Name)}</b><span><a class='btn sm' href='/graph?gid={Uri.EscapeDataString(gid)}'>Edit</a><a class='btn sm danger' href='/delete-graph/{Uri.EscapeDataString(gid)}' onclick=\"return confirm('Delete this graph?')\">Delete</a></span></header><div class='chartwrap' style='height:{height}px'><canvas></canvas></div></article>");
+            var legacyHeight = g.MiniHeightPx >= 1200 ? 160 : g.MiniHeightPx;
+            var height = Math.Clamp(savedRowHeight > 0 ? savedRowHeight : legacyHeight, 130, 1200);
+            graphs.Append($"<article class='graph' data-gid='{H(gid)}' data-row='{row}'><header><b>{H(g.Name)}</b><span><a class='btn sm' href='/graph?gid={Uri.EscapeDataString(gid)}'>Edit</a><a class='btn sm danger' href='/delete-graph/{Uri.EscapeDataString(gid)}' onclick=\"return confirm('Delete this graph?')\">Delete</a></span></header><div class='chartwrap' style='height:{height}px'><canvas></canvas></div></article>");
             graphIndex++;
         }
         return Replace(Load("index.html"), new()
