@@ -31,6 +31,40 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public void ConfigMigration_DefaultsMissingOrInvalidOscTransportToOscQuery()
+    {
+        var missing = JsonSerializer.Deserialize<AppConfig>("{}", JsonOptions.Default)!;
+        missing.Normalize();
+        Assert.Equal(AppConfig.CurrentConfigVersion, missing.ConfigVersion);
+        Assert.Equal(AppConfig.OscQueryTransport, missing.OscTransport);
+
+        var invalid = JsonSerializer.Deserialize<AppConfig>("{\"osc_transport\":\"both\"}", JsonOptions.Default)!;
+        invalid.Normalize();
+        Assert.Equal(AppConfig.OscQueryTransport, invalid.OscTransport);
+
+        var legacyAlias = JsonSerializer.Deserialize<AppConfig>("{\"osc_transport\":\"normal\"}", JsonOptions.Default)!;
+        legacyAlias.Normalize();
+        Assert.Equal(AppConfig.LegacyOscTransport, legacyAlias.OscTransport);
+    }
+
+    [Fact]
+    public async Task LegacyOscTransport_DoesNotStartOscQuery()
+    {
+        var cfg = EmptyConfig();
+        cfg.OscTransport = AppConfig.LegacyOscTransport;
+        cfg.OscInPort = 0;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.Osc.RestartAsync();
+
+        Assert.Equal(AppConfig.LegacyOscTransport, fixture.State.Osc.SelectedTransport);
+        Assert.True(fixture.State.Osc.TransportRunning);
+        Assert.True(fixture.State.Osc.LegacyOscRunning);
+        Assert.False(fixture.State.Osc.OscQueryRunning);
+        Assert.Null(fixture.State.Osc.OscQueryTcpPort);
+    }
+
+    [Fact]
     public async Task ThresholdMode_UsesStrictHysteresisAndSharedAddress()
     {
         var cfg = EmptyConfig();
@@ -88,6 +122,69 @@ public sealed class CounterTests
         Assert.InRange(series.Points.Count, 2, 4_002);
         Assert.True(series.BucketMs >= 60_000);
         Assert.Equal(5_000, series.Points[^1].V);
+    }
+
+    [Fact]
+    public async Task EventRepository_ReportsCombinedAndPerCounterDataBounds()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 1, 1_000);
+        await fixture.Repository.AddAsync("A", 2, 2_000);
+        await fixture.Repository.AddAsync("B", 7, 500);
+        await fixture.Repository.AddAsync("B", 8, 4_000);
+
+        var ranges = await fixture.Repository.GetRangesAsync(["A", "B", "Missing"]);
+        Assert.Equal(new EventRange(1_000, 2_000, 2), ranges["A"]);
+        Assert.Equal(new EventRange(500, 4_000, 2), ranges["B"]);
+        Assert.False(ranges.ContainsKey("Missing"));
+        Assert.Equal(new EventRange(500, 4_000, 4), await fixture.Repository.GetRangeAsync(["A", "B", "Missing"]));
+    }
+
+    [Fact]
+    public async Task Timeline_UsesPresetAsInitialViewportAndKeepsFullZoomBounds()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 1, 1_000);
+        await fixture.Repository.AddAsync("A", 2, 7_201_000);
+
+        var timeline = await fixture.Repository.GetTimelineAsync(
+            ["A"], new Dictionary<string, long> { ["A"] = 2 }, null, null,
+            "1h", "auto", "total", true, 9_000_000);
+
+        Assert.Equal(new TimelineBounds(1_000, 7_201_000, 2), timeline.DataBounds);
+        Assert.Equal(new TimelineViewport(3_601_000, 7_201_000), timeline.Viewport);
+        Assert.True(timeline.Follow);
+        Assert.Equal(9_000_000, timeline.ServerNowMs);
+        Assert.Equal(1_000, timeline.Series[0].DataStartMs);
+        Assert.Equal(7_201_000, timeline.Series[0].DataEndMs);
+    }
+
+    [Fact]
+    public async Task Timeline_ClampsUserViewportToRecordedDataAndDoesNotInventMissingHistory()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 4, 1_000);
+        await fixture.Repository.AddAsync("A", 5, 2_000);
+
+        var timeline = await fixture.Repository.GetTimelineAsync(
+            ["A", "Missing"], new Dictionary<string, long> { ["A"] = 5, ["Missing"] = 999 },
+            -10_000, 50_000, "all", "auto", "total", false, 60_000);
+
+        Assert.Equal(new TimelineViewport(1_000, 2_000), timeline.Viewport);
+        Assert.Equal(["A", "Missing"], timeline.SelectedCounters);
+        Assert.Equal(2, timeline.Series.Count);
+        Assert.Empty(timeline.Series.Single(x => x.Name == "Missing").Points);
+        Assert.Null(timeline.Series.Single(x => x.Name == "Missing").DataStartMs);
+        Assert.Equal(999, timeline.Series.Single(x => x.Name == "Missing").CurrentValue);
+    }
+
+    [Fact]
+    public void TimelineViewportResolver_NormalizesAndClampsExplicitSelection()
+    {
+        var bounds = new EventRange(1_000, 5_000, 8);
+        Assert.Equal(new TimelineViewport(1_000, 5_000), TimelineViewportResolver.Resolve(bounds, 9_000, -2_000, "1h", null, null, 10_000));
+        Assert.Equal(new TimelineViewport(2_000, 4_000), TimelineViewportResolver.Resolve(bounds, null, null, "custom", 4_000, 2_000, 10_000));
+        Assert.Equal(new TimelineViewport(10_000, 10_000), TimelineViewportResolver.Resolve(null, null, null, "all", null, null, 10_000));
     }
 
     private static AppConfig EmptyConfig() => new() { Counters = [], CounterOrder = [], Graphs = new() { ["g1"] = GraphConfig.Create("Test") }, GraphOrder = ["g1"] };

@@ -5,7 +5,12 @@ namespace VrcCounter.Models;
 
 public sealed class AppConfig
 {
-    [JsonPropertyName("config_version")] public int ConfigVersion { get; set; } = 26;
+    public const int CurrentConfigVersion = 27;
+    public const string OscQueryTransport = "oscquery";
+    public const string LegacyOscTransport = "legacy";
+
+    [JsonPropertyName("config_version")] public int ConfigVersion { get; set; } = CurrentConfigVersion;
+    [JsonPropertyName("osc_transport")] public string OscTransport { get; set; } = OscQueryTransport;
     [JsonPropertyName("osc_in_ip")] public string OscInIp { get; set; } = "127.0.0.1";
     [JsonPropertyName("osc_in_port")] public int OscInPort { get; set; } = 9001;
     [JsonPropertyName("osc_out_ip")] public string OscOutIp { get; set; } = "127.0.0.1";
@@ -50,6 +55,12 @@ public sealed class AppConfig
 
     public void Normalize()
     {
+        ConfigVersion = Math.Max(ConfigVersion, CurrentConfigVersion);
+        OscTransport = OscTransport?.Trim().ToLowerInvariant() switch
+        {
+            LegacyOscTransport or "osc" or "normal" or "legacy_osc" => LegacyOscTransport,
+            _ => OscQueryTransport
+        };
         OscInIp ??= "127.0.0.1"; OscOutIp ??= "127.0.0.1"; WebUiBind ??= "127.0.0.1";
         WebviewTitle ??= "VRChat Counter"; ChatboxMode ??= "modern";
         Counters ??= []; CounterOrder ??= []; Graphs ??= []; GraphOrder ??= []; HomeGraphRowHeights ??= [];
@@ -103,11 +114,27 @@ public sealed class GraphConfig
     [JsonPropertyName("custom_end_ms")] public long? CustomEndMs { get; set; }
     [JsonPropertyName("auto_refresh")] public bool AutoRefresh { get; set; } = true;
     [JsonPropertyName("auto_refresh_ms")] public int AutoRefreshMs { get; set; } = 60000;
+    [JsonPropertyName("auto_follow")] public bool AutoFollow { get; set; } = true;
     [JsonPropertyName("graph_height_px")] public int GraphHeightPx { get; set; } = 320;
     [JsonPropertyName("mini_height_px")] public int MiniHeightPx { get; set; } = 160;
     [JsonPropertyName("name")] public string? Name { get; set; } = "Home Graph 1";
     public static GraphConfig Create(string name) => new() { Name = name };
-    public void Normalize(string name) { Name = string.IsNullOrWhiteSpace(Name) ? name : Name; Counters ??= []; }
+    public void Normalize(string name)
+    {
+        Name = string.IsNullOrWhiteSpace(Name) ? name : Name;
+        Counters ??= [];
+        Counters = Counters.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList();
+        Preset = Preset is "all" or "10m" or "30m" or "1h" or "2h" or "5h" or "12h" or "1d" or "7d" or "30d" or "custom" ? Preset : "1h";
+        Bucket = Bucket is "minute" or "hour" or "day" or "auto" ? Bucket : "auto";
+        Mode = Mode == "delta" ? "delta" : "total";
+        GraphType = GraphType is "line" or "area" or "step" or "bar" ? GraphType : "line";
+        AutoRefreshMs = Math.Clamp(AutoRefreshMs, 1_000, 3_600_000);
+        GraphHeightPx = Math.Clamp(GraphHeightPx, 120, 1_200);
+        MiniHeightPx = Math.Clamp(MiniHeightPx, 100, 1_200);
+        if (YMin.HasValue && YMax.HasValue && YMin > YMax) (YMin, YMax) = (YMax, YMin);
+        if (CustomStartMs.HasValue && CustomEndMs.HasValue && CustomStartMs > CustomEndMs)
+            (CustomStartMs, CustomEndMs) = (CustomEndMs, CustomStartMs);
+    }
 }
 
 public static class JsonOptions

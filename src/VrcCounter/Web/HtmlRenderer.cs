@@ -34,6 +34,7 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
         return Replace(Load("index.html"), new()
         {
             ["rows"] = rows.Length > 0 ? rows.ToString() : "<tr><td colspan='6'><em>No counters yet.</em></td></tr>", ["tiles"] = tiles.ToString(), ["graphs"] = graphs.ToString(),
+            ["oscquery_transport"] = Selected(cfg.OscTransport == AppConfig.OscQueryTransport), ["legacy_osc_transport"] = Selected(cfg.OscTransport == AppConfig.LegacyOscTransport),
             ["osc_in_ip"] = H(cfg.OscInIp), ["osc_in_port"] = cfg.OscInPort.ToString(), ["osc_out_ip"] = H(cfg.OscOutIp), ["osc_out_port"] = cfg.OscOutPort.ToString(),
             ["web_ui_bind"] = H(cfg.WebUiBind), ["web_ui_port"] = cfg.WebUiPort.ToString(), ["save_throttle_ms"] = cfg.SaveThrottleMs.ToString(),
             ["modern"] = Selected(cfg.ChatboxMode == "modern"), ["legacy2"] = Selected(cfg.ChatboxMode == "legacy2"), ["both"] = Selected(cfg.ChatboxMode == "both"),

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using VrcCounter.Models;
 using VRC.OSCQuery;
 
 namespace VrcCounter.Services;
@@ -98,8 +99,12 @@ public sealed class OscService : IAsyncDisposable
     private UdpClient? _sender;
     private IPEndPoint? _output;
     private OSCQueryService? _oscQuery;
+    private int _listenerRunning;
     public int? OscQueryTcpPort { get; private set; }
     public bool OscQueryRunning => _oscQuery is not null;
+    public string SelectedTransport => _state.Read(c => c.OscTransport);
+    public bool TransportRunning => Volatile.Read(ref _listenerRunning) == 1;
+    public bool LegacyOscRunning => SelectedTransport == AppConfig.LegacyOscTransport && TransportRunning;
 
     public OscService(AppState state) { _state = state; RebuildOutput(); }
 
@@ -125,7 +130,7 @@ public sealed class OscService : IAsyncDisposable
         StopOscQuery();
         if (_listenerCts is not null) { await _listenerCts.CancelAsync(); if (_listener is not null) try { await _listener; } catch { } _listenerCts.Dispose(); }
         _listenerCts = new CancellationTokenSource(); _listener = ListenLoopAsync(_listenerCts.Token);
-        StartOscQuery();
+        if (SelectedTransport == AppConfig.OscQueryTransport) StartOscQuery();
     }
 
     private void StartOscQuery()
@@ -184,7 +189,9 @@ public sealed class OscService : IAsyncDisposable
             try
             {
                 var cfg = _state.Snapshot(); udp = new UdpClient(new IPEndPoint(IPAddress.Parse(cfg.OscInIp), cfg.OscInPort));
-                Console.WriteLine($"[OSC] Listening on {cfg.OscInIp}:{cfg.OscInPort}");
+                Volatile.Write(ref _listenerRunning, 1);
+                var label = cfg.OscTransport == AppConfig.OscQueryTransport ? "OSCQuery" : "Legacy OSC";
+                Console.WriteLine($"[{label}] Listening on {cfg.OscInIp}:{cfg.OscInPort}");
                 while (!token.IsCancellationRequested)
                 {
                     var result = await udp.ReceiveAsync(token);
@@ -197,7 +204,7 @@ public sealed class OscService : IAsyncDisposable
                 Console.Error.WriteLine($"[OSC] Listener error: {ex.Message}; retrying in 3s");
                 try { await Task.Delay(3000, token); } catch (OperationCanceledException) { break; }
             }
-            finally { udp?.Dispose(); }
+            finally { Volatile.Write(ref _listenerRunning, 0); udp?.Dispose(); }
         }
     }
 

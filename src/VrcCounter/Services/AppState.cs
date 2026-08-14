@@ -158,8 +158,8 @@ public sealed partial class AppState
     {
         bool input, output; lock (_gate)
         {
-            var oldIn = (_config.OscInIp, _config.OscInPort); var oldOut = (_config.OscOutIp, _config.OscOutPort);
-            update(_config); _config.Normalize(); input = oldIn != (_config.OscInIp, _config.OscInPort); output = oldOut != (_config.OscOutIp, _config.OscOutPort);
+            var oldIn = (_config.OscTransport, _config.OscInIp, _config.OscInPort); var oldOut = (_config.OscOutIp, _config.OscOutPort);
+            update(_config); _config.Normalize(); input = oldIn != (_config.OscTransport, _config.OscInIp, _config.OscInPort); output = oldOut != (_config.OscOutIp, _config.OscOutPort);
             Chatbox = new ChatboxService(this);
         }
         Changed(new { type = "global" }); return (input, output);

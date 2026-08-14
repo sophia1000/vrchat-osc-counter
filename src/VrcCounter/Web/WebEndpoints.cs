@@ -25,27 +25,17 @@ public static class WebEndpoints
         });
         app.MapGet("/api/series_multi", async (HttpRequest req) =>
         {
-            var query = req.Query; var names = query["counter"].SelectMany(x => (x ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList();
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var start = ParseLong(query["start_ms"].FirstOrDefault(), now - 3_600_000); var end = ParseLong(query["end_ms"].FirstOrDefault(), now);
-            var bucket = query["bucket"].FirstOrDefault() ?? "hour"; var mode = query["mode"].FirstOrDefault() ?? "total"; var cfg = state.Snapshot();
-            if (names.Count == 0) names = cfg.Counters.Keys.ToList(); else names = names.Where(cfg.Counters.ContainsKey).ToList();
-            var available = await state.Events.GetRangeAsync(names);
-            if (IsTrue(query["all"].FirstOrDefault()) && available is not null)
-            {
-                start = available.StartMs;
-                end = Math.Max(available.EndMs, start + 1);
-            }
-            if (end < start) (start, end) = (end, start);
-            var series = new List<EventSeries>(); foreach (var name in names) series.Add(await state.Events.GetSeriesAsync(name, start, end, bucket, mode, cfg.Counters[name].Count));
-            return Results.Json(new
-            {
-                series,
-                rangeStartMs = start,
-                rangeEndMs = end,
-                availableStartMs = available?.StartMs,
-                availableEndMs = available?.EndMs,
-                eventCount = available?.EventCount ?? 0
-            });
+            var cfg = state.Snapshot();
+            var timeline = await BuildTimelineAsync(req, state.Events, cfg, cfg.CounterOrder, null);
+            return Results.Json(TimelineResponse(timeline));
+        });
+        app.MapGet("/api/graph-data", async (HttpRequest req) =>
+        {
+            var cfg = state.Snapshot();
+            var id = req.Query["gid"].FirstOrDefault() ?? "g1";
+            if (!cfg.Graphs.TryGetValue(id, out var graph)) return Results.NotFound(new { error = "Graph not found", gid = id });
+            var timeline = await BuildTimelineAsync(req, state.Events, cfg, graph.Counters, graph);
+            return Results.Json(TimelineResponse(timeline));
         });
         app.MapMethods("/api/graph-prefs", ["GET", "POST"], async (HttpRequest req) =>
         {
@@ -54,7 +44,10 @@ public static class WebEndpoints
             {
                 var graph = state.GetGraph(id); var names = state.Read(c => c.Counters.Keys.ToHashSet()); graph.Counters = graph.Counters.Where(names.Contains).ToList(); return Results.Json(graph);
             }
-            var update = await JsonSerializer.DeserializeAsync<GraphConfig>(req.Body, JsonOptions.Default) ?? state.GetGraph(id); state.SetGraph(id, update); return Results.Json(new { ok = true });
+            var update = await JsonSerializer.DeserializeAsync<GraphConfig>(req.Body, JsonOptions.Default) ?? state.GetGraph(id);
+            update.Normalize(update.Name ?? $"Home Graph {id}");
+            state.SetGraph(id, update);
+            return Results.Json(new { ok = true });
         });
         app.MapPost("/api/graph-notify", async (HttpRequest req) =>
         {
@@ -90,6 +83,7 @@ public static class WebEndpoints
         {
             var f = await req.ReadFormAsync(); var changes = state.UpdateGlobal(c =>
             {
+                if (f.ContainsKey("osc_transport")) c.OscTransport = f["osc_transport"] == AppConfig.LegacyOscTransport ? AppConfig.LegacyOscTransport : AppConfig.OscQueryTransport;
                 c.OscInIp = ValueOr(f["osc_in_ip"], c.OscInIp); c.OscInPort = (int)ParseLong(f["osc_in_port"], c.OscInPort); c.OscOutIp = ValueOr(f["osc_out_ip"], c.OscOutIp); c.OscOutPort = (int)ParseLong(f["osc_out_port"], c.OscOutPort);
                 c.WebUiBind = ValueOr(f["web_ui_bind"], c.WebUiBind); c.WebUiPort = (int)ParseLong(f["web_ui_port"], c.WebUiPort); c.SaveThrottleMs = (int)ParseLong(f["save_throttle_ms"], c.SaveThrottleMs);
                 var mode = f["chatbox_mode"].ToString(); c.ChatboxMode = mode is "modern" or "legacy2" or "both" ? mode : "modern"; c.ChatboxPerMinuteLimit = (int)ParseLong(f["chatbox_per_minute_limit"], c.ChatboxPerMinuteLimit); c.ChatboxMinIntervalMs = (int)ParseLong(f["chatbox_min_interval_ms"], c.ChatboxMinIntervalMs); c.ChatboxAutoClearMs = (int)ParseLong(f["chatbox_auto_clear_ms"], c.ChatboxAutoClearMs);
@@ -98,11 +92,34 @@ public static class WebEndpoints
             if (changes.RebuildOutput) state.Osc.RebuildOutput(); if (changes.RestartInput) await state.Osc.RestartAsync(); return Results.Redirect("/");
         }).DisableAntiforgery();
         app.MapPost("/api/window-size", async (HttpRequest req) => { var d = await JsonSerializer.DeserializeAsync<WindowSize>(req.Body, JsonOptions.Default) ?? new(); if (d.W > 0 && d.H > 0) state.SetWindowSize(d.W, d.H); return Results.Json(new { ok = true }); });
-        app.MapGet("/api/oscquery/status", () => Results.Json(new { running = state.Osc.OscQueryRunning, tcpPort = state.Osc.OscQueryTcpPort, oscPort = state.Read(c => c.OscInPort) }));
-        app.MapGet("/health", () => Results.Json(new { ok = true, oscquery = new { running = state.Osc.OscQueryRunning, tcpPort = state.Osc.OscQueryTcpPort } }));
+        app.MapGet("/api/oscquery/status", () => Results.Json(new
+        {
+            mode = state.Osc.SelectedTransport,
+            running = state.Osc.OscQueryRunning,
+            transportRunning = state.Osc.TransportRunning,
+            oscQueryRunning = state.Osc.OscQueryRunning,
+            legacyOscRunning = state.Osc.LegacyOscRunning,
+            tcpPort = state.Osc.OscQueryTcpPort,
+            oscPort = state.Read(c => c.OscInPort)
+        }));
+        app.MapGet("/health", () => Results.Json(new
+        {
+            ok = true,
+            oscTransport = new
+            {
+                mode = state.Osc.SelectedTransport,
+                running = state.Osc.TransportRunning,
+                oscQueryRunning = state.Osc.OscQueryRunning,
+                legacyOscRunning = state.Osc.LegacyOscRunning,
+                tcpPort = state.Osc.OscQueryTcpPort,
+                oscPort = state.Read(c => c.OscInPort)
+            },
+            oscquery = new { running = state.Osc.OscQueryRunning, tcpPort = state.Osc.OscQueryTcpPort }
+        }));
     }
 
     private static bool IsTrue(string? value) => value is "1" or "true" or "True" or "on";
+    private static long? ParseNullableLong(string? value) => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : null;
     private static string ValueOr(string? value, string fallback) => string.IsNullOrEmpty(value) ? fallback : value;
     private static long ParseLong(string? value, long fallback) => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : fallback;
     private static double ParseDouble(string? value, double fallback) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) ? n : fallback;
@@ -111,4 +128,54 @@ public static class WebEndpoints
     private sealed class RenameGraph { public string Gid { get; set; } = ""; public string Name { get; set; } = ""; }
     private sealed class RowHeight { public int Row { get; set; } public int Height { get; set; } = 220; }
     private sealed class WindowSize { public int W { get; set; } public int H { get; set; } }
+
+    private static async Task<GraphTimeline> BuildTimelineAsync(
+        HttpRequest req,
+        EventRepository events,
+        AppConfig cfg,
+        IReadOnlyList<string> defaultNames,
+        GraphConfig? graph)
+    {
+        var query = req.Query;
+        var hasCounterSelection = query.ContainsKey("counter");
+        var requestedNames = query["counter"].SelectMany(x => (x ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var names = (hasCounterSelection ? requestedNames : defaultNames)
+            .Where(cfg.Counters.ContainsKey)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var preset = query["preset"].FirstOrDefault() ?? graph?.Preset ?? "1h";
+        if (IsTrue(query["all"].FirstOrDefault())) preset = "all";
+        if (preset is not ("all" or "10m" or "30m" or "1h" or "2h" or "5h" or "12h" or "1d" or "7d" or "30d" or "custom")) preset = "1h";
+        var bucket = query["bucket"].FirstOrDefault() ?? graph?.Bucket ?? "auto";
+        if (bucket is not ("auto" or "minute" or "hour" or "day")) bucket = "auto";
+        var mode = (query["mode"].FirstOrDefault() ?? graph?.Mode) == "delta" ? "delta" : "total";
+        var follow = query.ContainsKey("follow") ? IsTrue(query["follow"].FirstOrDefault()) : graph?.AutoFollow ?? true;
+        var reset = IsTrue(query["reset"].FirstOrDefault()) || IsTrue(query["all"].FirstOrDefault());
+        var start = reset ? null : ParseNullableLong(query["start_ms"].FirstOrDefault());
+        var end = reset ? null : ParseNullableLong(query["end_ms"].FirstOrDefault());
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var counts = names.ToDictionary(x => x, x => cfg.Counters[x].Count, StringComparer.Ordinal);
+        return await events.GetTimelineAsync(names, counts, start, end, preset, bucket, mode, follow, now, graph?.CustomStartMs, graph?.CustomEndMs);
+    }
+
+    private static object TimelineResponse(GraphTimeline timeline) => new
+    {
+        timeline.Series,
+        dataBounds = timeline.DataBounds,
+        timeline.Viewport,
+        timeline.ServerNowMs,
+        timeline.SelectedCounters,
+        timeline.Preset,
+        timeline.Bucket,
+        timeline.Mode,
+        timeline.Follow,
+        timeline.HasData,
+        timeline.MaxPointsPerSeries,
+        // Compatibility aliases retained for the original graph client.
+        rangeStartMs = timeline.Viewport.StartMs,
+        rangeEndMs = timeline.Viewport.EndMs,
+        availableStartMs = timeline.DataBounds?.StartMs,
+        availableEndMs = timeline.DataBounds?.EndMs,
+        eventCount = timeline.DataBounds?.EventCount ?? 0
+    };
 }

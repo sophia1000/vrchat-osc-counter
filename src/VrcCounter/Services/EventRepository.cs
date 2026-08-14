@@ -5,7 +5,8 @@ namespace VrcCounter.Services;
 
 public sealed class EventRepository : IAsyncDisposable
 {
-    private const int MaxSeriesPoints = 4_000;
+    public const int MaxSeriesPoints = 4_000;
+    public const int MaxReturnedSeriesPoints = MaxSeriesPoints + 2;
     private readonly SqliteConnection _db;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
@@ -44,26 +45,35 @@ public sealed class EventRepository : IAsyncDisposable
 
     public async Task<EventRange?> GetRangeAsync(IReadOnlyCollection<string> names)
     {
-        if (names.Count == 0) return null;
+        var ranges = await GetRangesAsync(names);
+        if (ranges.Count == 0) return null;
+        return new EventRange(ranges.Values.Min(x => x.StartMs), ranges.Values.Max(x => x.EndMs), ranges.Values.Sum(x => x.EventCount));
+    }
+
+    public async Task<IReadOnlyDictionary<string, EventRange>> GetRangesAsync(IReadOnlyCollection<string> names)
+    {
+        if (names.Count == 0) return new Dictionary<string, EventRange>();
         await _lock.WaitAsync();
         try
         {
             await using var cmd = _db.CreateCommand();
-            var parameters = names.Select((name, index) => (name, key: $"$counter{index}")).ToArray();
-            cmd.CommandText = $"SELECT MIN(ts_ms),MAX(ts_ms),COUNT(*) FROM events WHERE counter IN ({string.Join(',', parameters.Select(x => x.key))})";
+            var parameters = names.Distinct(StringComparer.Ordinal).Select((name, index) => (name, key: $"$counter{index}")).ToArray();
+            cmd.CommandText = $"SELECT counter,MIN(ts_ms),MAX(ts_ms),COUNT(*) FROM events WHERE counter IN ({string.Join(',', parameters.Select(x => x.key))}) GROUP BY counter";
             foreach (var item in parameters) cmd.Parameters.AddWithValue(item.key, item.name);
+            var ranges = new Dictionary<string, EventRange>(StringComparer.Ordinal);
             await using var reader = await cmd.ExecuteReaderAsync();
-            if (!await reader.ReadAsync() || reader.IsDBNull(0)) return null;
-            return new EventRange(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
+            while (await reader.ReadAsync())
+                ranges[reader.GetString(0)] = new EventRange(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
+            return ranges;
         }
         finally { _lock.Release(); }
     }
 
-    public async Task<EventSeries> GetSeriesAsync(string name, long startMs, long endMs, string bucket, string mode, long currentCount)
+    public async Task<EventSeries> GetSeriesAsync(string name, long startMs, long endMs, string bucket, string mode, long currentCount, EventRange? dataRange = null)
     {
         var rows = new List<(long Ts, long Count)>();
-        var requestedBucketMs = bucket == "minute" ? 60_000L : bucket == "day" ? 86_400_000L : 3_600_000L;
-        var rangeMs = Math.Max(1, endMs - startMs);
+        var requestedBucketMs = bucket switch { "minute" => 60_000L, "hour" => 3_600_000L, "day" => 86_400_000L, _ => 1L };
+        var rangeMs = endMs > startMs ? endMs - startMs : 1;
         long eventCount;
         long? before = null;
         long effectiveBucketMs = 0;
@@ -82,9 +92,9 @@ public sealed class EventRepository : IAsyncDisposable
                 {
                     effectiveBucketMs = Math.Max(requestedBucketMs, (rangeMs + MaxSeriesPoints - 1) / MaxSeriesPoints);
                     if (mode == "delta")
-                        cmd.CommandText = "SELECT CAST(ts_ms/$size AS INTEGER)*$size AS bucket_start,COUNT(*) FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end GROUP BY CAST(ts_ms/$size AS INTEGER) ORDER BY bucket_start";
+                        cmd.CommandText = "SELECT CAST((ts_ms-$start)/$size AS INTEGER)*$size+$start AS bucket_start,COUNT(*) FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end GROUP BY CAST((ts_ms-$start)/$size AS INTEGER) ORDER BY bucket_start";
                     else
-                        cmd.CommandText = "SELECT ts_ms,count_after FROM (SELECT ts_ms,count_after,ROW_NUMBER() OVER(PARTITION BY CAST(ts_ms/$size AS INTEGER) ORDER BY ts_ms DESC,id DESC) AS rn FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end) WHERE rn=1 ORDER BY ts_ms";
+                        cmd.CommandText = "SELECT ts_ms,count_after FROM (SELECT ts_ms,count_after,ROW_NUMBER() OVER(PARTITION BY CAST((ts_ms-$start)/$size AS INTEGER) ORDER BY ts_ms DESC,id DESC) AS rn FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end) WHERE rn=1 ORDER BY ts_ms";
                     cmd.Parameters.AddWithValue("$size", effectiveBucketMs);
                 }
                 else
@@ -95,7 +105,7 @@ public sealed class EventRepository : IAsyncDisposable
             }
             await using (var cmd = _db.CreateCommand())
             {
-                cmd.CommandText = "SELECT count_after FROM events WHERE counter=$counter AND ts_ms<=$start ORDER BY ts_ms DESC LIMIT 1";
+                cmd.CommandText = "SELECT count_after FROM events WHERE counter=$counter AND ts_ms<$start ORDER BY ts_ms DESC,id DESC LIMIT 1";
                 cmd.Parameters.AddWithValue("$counter", name); cmd.Parameters.AddWithValue("$start", startMs);
                 var value = await cmd.ExecuteScalarAsync(); if (value is not null and not DBNull) before = Convert.ToInt64(value);
             }
@@ -106,7 +116,7 @@ public sealed class EventRepository : IAsyncDisposable
         if (mode == "delta")
         {
             var buckets = rows.ToDictionary(x => x.Ts, x => x.Count);
-            for (var t = startMs / effectiveBucketMs * effectiveBucketMs; t <= endMs; t += effectiveBucketMs)
+            for (var t = startMs; t <= endMs; t += effectiveBucketMs)
             {
                 var value = buckets.GetValueOrDefault(t); points.Add(new(t, value)); max = Math.Max(max, value);
                 if (t > long.MaxValue - effectiveBucketMs) break;
@@ -114,15 +124,109 @@ public sealed class EventRepository : IAsyncDisposable
         }
         else
         {
-            var baseline = before ?? (rows.Count > 0 ? rows[0].Count : currentCount);
-            points.Add(new(startMs, baseline)); max = baseline; var last = baseline;
-            foreach (var row in rows) { last = row.Count; points.Add(new(row.Ts, last)); max = Math.Max(max, last); }
-            points.Add(new(endMs, last));
+            long? last = before;
+            if (before.HasValue) { points.Add(new(startMs, before.Value)); max = before.Value; }
+            foreach (var row in rows) { last = row.Count; points.Add(new(row.Ts, row.Count)); max = Math.Max(max, row.Count); }
+            if (last.HasValue && (points.Count == 0 || points[^1].T < endMs)) points.Add(new(endMs, last.Value));
         }
-        return new(name, points, max, eventCount, effectiveBucketMs);
+        return new(name, points, max, eventCount, effectiveBucketMs, dataRange?.StartMs, dataRange?.EndMs, currentCount);
+    }
+
+    public async Task<GraphTimeline> GetTimelineAsync(
+        IReadOnlyList<string> names,
+        IReadOnlyDictionary<string, long> currentCounts,
+        long? requestedStartMs,
+        long? requestedEndMs,
+        string preset,
+        string bucket,
+        string mode,
+        bool follow,
+        long serverNowMs,
+        long? customStartMs = null,
+        long? customEndMs = null)
+    {
+        var selected = names.Distinct(StringComparer.Ordinal).ToArray();
+        var ranges = await GetRangesAsync(selected);
+        var combined = ranges.Count == 0
+            ? null
+            : new EventRange(ranges.Values.Min(x => x.StartMs), ranges.Values.Max(x => x.EndMs), ranges.Values.Sum(x => x.EventCount));
+        var viewport = TimelineViewportResolver.Resolve(combined, requestedStartMs, requestedEndMs, preset, customStartMs, customEndMs, serverNowMs);
+        var series = new List<EventSeries>(selected.Length);
+        foreach (var name in selected)
+        {
+            ranges.TryGetValue(name, out var range);
+            series.Add(await GetSeriesAsync(name, viewport.StartMs, viewport.EndMs, bucket, mode, currentCounts.GetValueOrDefault(name), range));
+        }
+        return new(
+            series,
+            combined is null ? null : new TimelineBounds(combined.StartMs, combined.EndMs, combined.EventCount),
+            viewport,
+            serverNowMs,
+            selected,
+            preset,
+            bucket,
+            mode,
+            follow,
+            MaxReturnedSeriesPoints);
     }
 
     public async ValueTask DisposeAsync() { await _db.DisposeAsync(); _lock.Dispose(); }
 }
 
 public sealed record EventRange(long StartMs, long EndMs, long EventCount);
+
+public static class TimelineViewportResolver
+{
+    private static readonly IReadOnlyDictionary<string, long> PresetSpans = new Dictionary<string, long>(StringComparer.Ordinal)
+    {
+        ["10m"] = 10 * 60_000L,
+        ["30m"] = 30 * 60_000L,
+        ["1h"] = 60 * 60_000L,
+        ["2h"] = 2 * 60 * 60_000L,
+        ["5h"] = 5 * 60 * 60_000L,
+        ["12h"] = 12 * 60 * 60_000L,
+        ["1d"] = 24 * 60 * 60_000L,
+        ["7d"] = 7 * 24 * 60 * 60_000L,
+        ["30d"] = 30 * 24 * 60 * 60_000L
+    };
+
+    public static TimelineViewport Resolve(
+        EventRange? bounds,
+        long? requestedStartMs,
+        long? requestedEndMs,
+        string preset,
+        long? customStartMs,
+        long? customEndMs,
+        long serverNowMs)
+    {
+        if (bounds is null) return new(serverNowMs, serverNowMs);
+
+        long start;
+        long end;
+        if (requestedStartMs.HasValue || requestedEndMs.HasValue)
+        {
+            start = requestedStartMs ?? bounds.StartMs;
+            end = requestedEndMs ?? bounds.EndMs;
+        }
+        else if (preset == "custom" && (customStartMs.HasValue || customEndMs.HasValue))
+        {
+            start = customStartMs ?? bounds.StartMs;
+            end = customEndMs ?? bounds.EndMs;
+        }
+        else if (PresetSpans.TryGetValue(preset, out var span))
+        {
+            end = bounds.EndMs;
+            start = end >= long.MinValue + span ? end - span : long.MinValue;
+        }
+        else
+        {
+            start = bounds.StartMs;
+            end = bounds.EndMs;
+        }
+
+        if (end < start) (start, end) = (end, start);
+        start = Math.Clamp(start, bounds.StartMs, bounds.EndMs);
+        end = Math.Clamp(end, bounds.StartMs, bounds.EndMs);
+        return new(start, end);
+    }
+}
