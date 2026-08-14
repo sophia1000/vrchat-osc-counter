@@ -17,9 +17,11 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
         var cfg = state.Snapshot(); var rows = new StringBuilder(); var tiles = new StringBuilder();
         foreach (var name in cfg.CounterOrder)
         {
-            if (!cfg.Counters.TryGetValue(name, out var c)) continue; var enc = Uri.EscapeDataString(name); var chk = c.SendChatbox ? "checked" : "";
-            rows.Append($"<tr draggable='true' data-name='{H(name)}'><td class='drag'>⋮⋮</td><td><span class='pill'>{H(name)}</span></td><td><code>{H(c.Address)}</code></td><td class='count'>{c.Count:N0}</td><td><input class='chatToggle' type='checkbox' {chk}></td><td><a class='btn sm' href='/edit/{enc}'>Edit</a></td></tr>");
-            tiles.Append($"<div class='tile' draggable='true' data-name='{H(name)}'><div><b>{H(name)}</b><strong class='count'>{c.Count:N0}</strong></div><footer><label><input class='chatToggle' type='checkbox' {chk}> Chatbox</label><a class='btn sm' href='/edit/{enc}'>Edit</a></footer></div>");
+            if (!cfg.Counters.TryGetValue(name, out var c)) continue; var enc = Uri.EscapeDataString(name);
+            var pressed = c.SendChatbox ? "true" : "false";
+            var on = c.SendChatbox ? " on" : "";
+            rows.Append($"<tr draggable='true' data-name='{H(name)}'><td class='drag'>⋮⋮</td><td><span class='pill'>{H(name)}</span></td><td><code>{H(c.Address)}</code></td><td class='count'>{c.Count:N0}</td><td><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button></td><td><a class='btn sm' href='/edit/{enc}'>Edit</a></td></tr>");
+            tiles.Append($"<div class='tile' draggable='true' data-name='{H(name)}'><div><b>{H(name)}</b><strong class='count'>{c.Count:N0}</strong></div><footer><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button><a class='btn sm' href='/edit/{enc}'>Edit</a></footer></div>");
         }
         var graphs = new StringBuilder(); var graphIndex = 0;
         foreach (var gid in cfg.GraphOrder)

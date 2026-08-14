@@ -95,8 +95,9 @@ public sealed partial class AppState
 
     public void ToggleChatbox(string name, bool on)
     {
-        lock (_gate) if (_config.Counters.TryGetValue(name, out var c)) c.SendChatbox = on;
-        Changed(new { type = "counter_toggle", name });
+        var changed = false;
+        lock (_gate) if (_config.Counters.TryGetValue(name, out var c)) { c.SendChatbox = on; changed = true; }
+        if (changed) Changed(new { type = "counter_toggle", name, send_chatbox = on });
     }
 
     public bool SetCounterOrder(IEnumerable<string> requested)
