@@ -92,7 +92,7 @@ public sealed class CounterTests
     {
         using var receiver = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
         var cfg = EmptyConfig(); var c = CounterConfig.Create("Chat", "/chat");
-        c.DebounceMs = 0; c.SendChatbox = true; c.ChatboxNotify = false; c.ChatboxTemplate = "Count {count}";
+        c.DebounceMs = 0; c.SendChatbox = true; c.ChatboxNotify = false; c.ChatboxTemplate = "🎀 Count {count}";
         cfg.Counters[c.Name] = c; cfg.CounterOrder.Add(c.Name);
         cfg.OscOutPort = ((System.Net.IPEndPoint)receiver.Client.LocalEndPoint!).Port;
         cfg.ChatboxMinIntervalMs = 0; cfg.ChatboxAutoClearMs = 0;
@@ -102,9 +102,11 @@ public sealed class CounterTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var datagram = await receiver.ReceiveAsync(timeout.Token);
         var message = Assert.Single(OscCodec.Decode(datagram.Buffer));
+        var pythonOscPacket = Convert.FromHexString("2F63686174626F782F696E70757400002C73544600000000F09F8E8020436F756E74203100000000");
 
+        Assert.Equal(pythonOscPacket, datagram.Buffer);
         Assert.Equal("/chatbox/input", message.Address);
-        Assert.Equal(["Count 1", true, false], message.Values);
+        Assert.Equal(["🎀 Count 1", true, false], message.Values);
         var status = fixture.State.Osc.GetSendStatus();
         Assert.Equal(1, status.SentPacketCount);
         Assert.Equal("/chatbox/input", status.LastSendAddress);

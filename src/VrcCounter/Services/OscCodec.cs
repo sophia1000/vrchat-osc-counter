@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using BlobHandles;
+using Buildetech.OscCore;
 using VrcCounter.Models;
 using VRC.OSCQuery;
 
@@ -94,9 +96,11 @@ public static class OscCodec
 public sealed class OscService : IAsyncDisposable
 {
     private readonly AppState _state;
+    private readonly object _sendGate = new();
     private CancellationTokenSource? _listenerCts;
     private Task? _listener;
-    private UdpClient? _sender;
+    private Socket? _senderSocket;
+    private OscWriter? _senderWriter;
     private IPEndPoint? _output;
     private OSCQueryService? _oscQuery;
     private int _listenerRunning;
@@ -110,13 +114,24 @@ public sealed class OscService : IAsyncDisposable
     public bool TransportRunning => Volatile.Read(ref _listenerRunning) == 1;
     public bool LegacyOscRunning => SelectedTransport == AppConfig.LegacyOscTransport && TransportRunning;
 
-    public OscService(AppState state) { _state = state; RebuildOutput(); }
+    public OscService(AppState state)
+    {
+        _state = state;
+        BlobString.Encoding = Encoding.UTF8;
+        RebuildOutput();
+    }
 
     public void RebuildOutput()
     {
-        var cfg = _state.Snapshot();
-        _sender?.Dispose(); _sender = new UdpClient(AddressFamily.InterNetwork);
-        _output = new IPEndPoint(IPAddress.Parse(cfg.OscOutIp), cfg.OscOutPort);
+        lock (_sendGate)
+        {
+            try { RebuildOutputLocked(); }
+            catch (Exception ex)
+            {
+                Volatile.Write(ref _lastSendError, ex.Message);
+                Console.Error.WriteLine($"[OSC] OscCore client could not initialize: {ex.Message}");
+            }
+        }
     }
 
     public OscSendStatus GetSendStatus() => new(
@@ -125,19 +140,94 @@ public sealed class OscService : IAsyncDisposable
         Volatile.Read(ref _lastSendAddress),
         Volatile.Read(ref _lastSendError));
 
-    public async Task<bool> SendAsync(string address, params object[] values)
+    public Task<bool> SendAsync(string address, params object[] values)
     {
-        try
+        lock (_sendGate)
         {
-            var sender = _sender; var endpoint = _output; if (sender is null || endpoint is null) return false;
-            var packet = OscCodec.Encode(address, values); await sender.SendAsync(packet, endpoint);
-            Interlocked.Increment(ref _sentPacketCount);
-            Interlocked.Exchange(ref _lastSendMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            Volatile.Write(ref _lastSendAddress, address);
-            Volatile.Write(ref _lastSendError, "");
-            return true;
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    if (_senderSocket is null || _senderWriter is null || _output is null) RebuildOutputLocked();
+                    SendWithOscCore(_senderSocket!, _senderWriter!, _output!, address, values);
+                    Interlocked.Increment(ref _sentPacketCount);
+                    Interlocked.Exchange(ref _lastSendMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    Volatile.Write(ref _lastSendAddress, address);
+                    Volatile.Write(ref _lastSendError, "");
+                    return Task.FromResult(true);
+                }
+                catch (Exception ex) when (attempt == 0)
+                {
+                    Console.Error.WriteLine($"[OSC] OscCore send failed, rebuilding client: {ex.Message}");
+                    try { RebuildOutputLocked(); }
+                    catch (Exception rebuildError)
+                    {
+                        Volatile.Write(ref _lastSendError, rebuildError.Message);
+                        return Task.FromResult(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Volatile.Write(ref _lastSendError, ex.Message);
+                    Console.Error.WriteLine($"[ERROR] OscCore send: {ex.Message}");
+                    return Task.FromResult(false);
+                }
+            }
         }
-        catch (Exception ex) { Volatile.Write(ref _lastSendError, ex.Message); Console.Error.WriteLine($"[ERROR] OSC send: {ex.Message}"); return false; }
+        return Task.FromResult(false);
+    }
+
+    private void RebuildOutputLocked()
+    {
+        var cfg = _state.Snapshot();
+        var output = new IPEndPoint(IPAddress.Parse(cfg.OscOutIp), cfg.OscOutPort);
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        var sourceAddress = IPAddress.IsLoopback(output.Address) ? IPAddress.Loopback : IPAddress.Any;
+        socket.Bind(new IPEndPoint(sourceAddress, 0));
+        var writer = new OscWriter();
+        var previousSocket = _senderSocket;
+        var previousWriter = _senderWriter;
+        _senderSocket = socket;
+        _senderWriter = writer;
+        _output = output;
+        previousSocket?.Dispose();
+        previousWriter?.Dispose();
+    }
+
+    private static void SendWithOscCore(Socket socket, OscWriter writer, IPEndPoint output, string address, IReadOnlyList<object> values)
+    {
+        writer.Reset();
+        writer.Write(address);
+
+        var tags = new StringBuilder(",");
+        foreach (var value in values)
+            tags.Append(value switch
+            {
+                int => 'i',
+                long => 'h',
+                float => 'f',
+                double => 'd',
+                string => 's',
+                bool b => b ? 'T' : 'F',
+                _ => 's'
+            });
+        writer.Write(tags.ToString());
+
+        foreach (var value in values)
+        {
+            switch (value)
+            {
+                case int i: writer.Write(i); break;
+                case long l: writer.Write(l); break;
+                case float f: writer.Write(f); break;
+                case double d: writer.Write(d); break;
+                case string s: writer.Write(new BlobString(s)); break;
+                case bool: break;
+                default: writer.Write(new BlobString(value?.ToString() ?? "")); break;
+            }
+        }
+
+        socket.SendTo(writer.Buffer, 0, writer.Length, SocketFlags.None, output);
     }
 
     public async Task RestartAsync()
@@ -227,7 +317,14 @@ public sealed class OscService : IAsyncDisposable
     {
         StopOscQuery();
         if (_listenerCts is not null) { await _listenerCts.CancelAsync(); if (_listener is not null) try { await _listener; } catch { } _listenerCts.Dispose(); }
-        _sender?.Dispose();
+        lock (_sendGate)
+        {
+            _senderSocket?.Dispose();
+            _senderWriter?.Dispose();
+            _senderSocket = null;
+            _senderWriter = null;
+            _output = null;
+        }
     }
 }
 
