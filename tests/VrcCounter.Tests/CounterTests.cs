@@ -114,6 +114,27 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public async Task ChatboxLimiter_AppliesOneSecondFloorToEverySendPath()
+    {
+        using var receiver = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var cfg = EmptyConfig();
+        cfg.OscOutPort = ((System.Net.IPEndPoint)receiver.Client.LocalEndPoint!).Port;
+        cfg.ChatboxMinIntervalMs = 0;
+        cfg.ChatboxPerMinuteLimit = 100;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        Assert.True(await fixture.State.Chatbox.SendTestAsync());
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(await fixture.State.Chatbox.SendTestAsync());
+        timer.Stop();
+
+        Assert.InRange(timer.ElapsedMilliseconds, 900, 5000);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await receiver.ReceiveAsync(timeout.Token);
+        await receiver.ReceiveAsync(timeout.Token);
+    }
+
+    [Fact]
     public void Templates_KeepUnknownFieldsAndFormatCounts()
         => Assert.Equal("Boops: 12,345 {unknown}", AppState.FormatTemplate("{name}: {count} {unknown}", "Boops", 12345));
 

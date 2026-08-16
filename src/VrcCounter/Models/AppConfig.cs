@@ -8,6 +8,7 @@ public sealed class AppConfig
     public const int CurrentConfigVersion = 27;
     public const string OscQueryTransport = "oscquery";
     public const string LegacyOscTransport = "legacy";
+    public const int VrchatChatboxMinimumIntervalMs = 1000;
 
     [JsonPropertyName("config_version")] public int ConfigVersion { get; set; } = CurrentConfigVersion;
     [JsonPropertyName("osc_transport")] public string OscTransport { get; set; } = OscQueryTransport;
@@ -31,7 +32,7 @@ public sealed class AppConfig
     [JsonPropertyName("save_throttle_ms")] public int SaveThrottleMs { get; set; } = 400;
     [JsonPropertyName("chatbox_mode")] public string ChatboxMode { get; set; } = "modern";
     [JsonPropertyName("chatbox_per_minute_limit")] public int ChatboxPerMinuteLimit { get; set; } = 30;
-    [JsonPropertyName("chatbox_min_interval_ms")] public int ChatboxMinIntervalMs { get; set; } = 1200;
+    [JsonPropertyName("chatbox_min_interval_ms")] public int ChatboxMinIntervalMs { get; set; } = 1000;
     [JsonPropertyName("chatbox_auto_clear_ms")] public int ChatboxAutoClearMs { get; set; } = 10000;
     [JsonPropertyName("chatbox_enabled_by_default")] public bool ChatboxEnabledByDefault { get; set; } = true;
     [JsonPropertyName("chatbox_notify_by_default")] public bool ChatboxNotifyByDefault { get; set; } = true;
@@ -64,6 +65,8 @@ public sealed class AppConfig
         OscInIp ??= "127.0.0.1"; OscOutIp ??= "127.0.0.1"; WebUiBind ??= "127.0.0.1";
         WebviewTitle ??= "VRChat Counter"; ChatboxMode ??= "modern";
         Counters ??= []; CounterOrder ??= []; Graphs ??= []; GraphOrder ??= []; HomeGraphRowHeights ??= [];
+        ChatboxPerMinuteLimit = Math.Max(1, ChatboxPerMinuteLimit);
+        ChatboxMinIntervalMs = Math.Max(VrchatChatboxMinimumIntervalMs, ChatboxMinIntervalMs);
         foreach (var (name, counter) in Counters.ToArray()) { counter.Normalize(name); }
         CounterOrder = CounterOrder.Where(Counters.ContainsKey).Distinct().ToList();
         CounterOrder.AddRange(Counters.Keys.Where(x => !CounterOrder.Contains(x)));
