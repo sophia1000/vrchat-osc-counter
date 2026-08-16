@@ -102,6 +102,22 @@ public static class WebEndpoints
             tcpPort = state.Osc.OscQueryTcpPort,
             oscPort = state.Read(c => c.OscInPort)
         }));
+        app.MapGet("/api/chatbox/status", () =>
+        {
+            var cfg = state.Snapshot(); var send = state.Osc.GetSendStatus();
+            return Results.Json(new
+            {
+                outputIp = cfg.OscOutIp,
+                outputPort = cfg.OscOutPort,
+                mode = cfg.ChatboxMode,
+                pendingCount = state.Chatbox.PendingCount,
+                send.SentPacketCount,
+                send.LastSendMs,
+                send.LastSendAddress,
+                send.LastSendError
+            });
+        });
+        app.MapPost("/api/chatbox/test", async () => Results.Json(new { sent = await state.Chatbox.SendTestAsync() }));
         app.MapGet("/health", () => Results.Json(new
         {
             ok = true,

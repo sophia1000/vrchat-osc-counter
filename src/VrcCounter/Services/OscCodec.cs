@@ -100,6 +100,10 @@ public sealed class OscService : IAsyncDisposable
     private IPEndPoint? _output;
     private OSCQueryService? _oscQuery;
     private int _listenerRunning;
+    private long _sentPacketCount;
+    private long _lastSendMs;
+    private string _lastSendAddress = "";
+    private string _lastSendError = "";
     public int? OscQueryTcpPort { get; private set; }
     public bool OscQueryRunning => _oscQuery is not null;
     public string SelectedTransport => _state.Read(c => c.OscTransport);
@@ -115,14 +119,25 @@ public sealed class OscService : IAsyncDisposable
         _output = new IPEndPoint(IPAddress.Parse(cfg.OscOutIp), cfg.OscOutPort);
     }
 
-    public async Task SendAsync(string address, params object[] values)
+    public OscSendStatus GetSendStatus() => new(
+        Interlocked.Read(ref _sentPacketCount),
+        Interlocked.Read(ref _lastSendMs),
+        Volatile.Read(ref _lastSendAddress),
+        Volatile.Read(ref _lastSendError));
+
+    public async Task<bool> SendAsync(string address, params object[] values)
     {
         try
         {
-            var sender = _sender; var endpoint = _output; if (sender is null || endpoint is null) return;
+            var sender = _sender; var endpoint = _output; if (sender is null || endpoint is null) return false;
             var packet = OscCodec.Encode(address, values); await sender.SendAsync(packet, endpoint);
+            Interlocked.Increment(ref _sentPacketCount);
+            Interlocked.Exchange(ref _lastSendMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            Volatile.Write(ref _lastSendAddress, address);
+            Volatile.Write(ref _lastSendError, "");
+            return true;
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[ERROR] OSC send: {ex.Message}"); }
+        catch (Exception ex) { Volatile.Write(ref _lastSendError, ex.Message); Console.Error.WriteLine($"[ERROR] OSC send: {ex.Message}"); return false; }
     }
 
     public async Task RestartAsync()
@@ -215,3 +230,5 @@ public sealed class OscService : IAsyncDisposable
         _sender?.Dispose();
     }
 }
+
+public sealed record OscSendStatus(long SentPacketCount, long LastSendMs, string LastSendAddress, string LastSendError);

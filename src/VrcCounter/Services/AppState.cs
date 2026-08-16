@@ -193,6 +193,12 @@ public sealed class ChatboxService
     private readonly AppState _state; private readonly object _gate = new(); private readonly Dictionary<string, long> _pending = [];
     private readonly Queue<long> _sent = []; private long _lastSent; private bool _flushScheduled; private long _clearGeneration;
     public ChatboxService(AppState state) => _state = state;
+    public int PendingCount { get { lock (_gate) return _pending.Count; } }
+
+    public Task<bool> SendTestAsync() => SendModeAsync(
+        _state.Snapshot().ChatboxMode,
+        $"VRChat Counter test {DateTime.Now:HH:mm:ss}",
+        true);
 
     public void Changed(string name, long timestamp) { lock (_gate) _pending[name] = timestamp; _ = FlushOrScheduleAsync(); }
     private long WaitMs()
@@ -225,9 +231,11 @@ public sealed class ChatboxService
         var generation = Interlocked.Increment(ref _clearGeneration);
         if (cfg.ChatboxAutoClearMs > 0) _ = Task.Run(async () => { await Task.Delay(cfg.ChatboxAutoClearMs); if (Interlocked.Read(ref _clearGeneration) == generation) await SendModeAsync(_state.Snapshot().ChatboxMode, "", false); });
     }
-    private async Task SendModeAsync(string mode, string text, bool notify)
+    private async Task<bool> SendModeAsync(string mode, string text, bool notify)
     {
-        if (mode is "modern" or "both") await _state.Osc.SendAsync("/chatbox/input", text, true, notify);
-        if (mode is "legacy2" or "both") await _state.Osc.SendAsync("/chatbox/input", text, true);
+        var sent = false;
+        if (mode is "modern" or "both") sent |= await _state.Osc.SendAsync("/chatbox/input", text, true, notify);
+        if (mode is "legacy2" or "both") sent |= await _state.Osc.SendAsync("/chatbox/input", text, true);
+        return sent;
     }
 }

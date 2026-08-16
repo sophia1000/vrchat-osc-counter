@@ -88,6 +88,30 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public async Task ChatboxTrigger_SendsVrchatPacketAndReportsDeliveryToUdp()
+    {
+        using var receiver = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var cfg = EmptyConfig(); var c = CounterConfig.Create("Chat", "/chat");
+        c.DebounceMs = 0; c.SendChatbox = true; c.ChatboxNotify = false; c.ChatboxTemplate = "Count {count}";
+        cfg.Counters[c.Name] = c; cfg.CounterOrder.Add(c.Name);
+        cfg.OscOutPort = ((System.Net.IPEndPoint)receiver.Client.LocalEndPoint!).Port;
+        cfg.ChatboxMinIntervalMs = 0; cfg.ChatboxAutoClearMs = 0;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.HandleOscAsync("/chat", [.6f]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var datagram = await receiver.ReceiveAsync(timeout.Token);
+        var message = Assert.Single(OscCodec.Decode(datagram.Buffer));
+
+        Assert.Equal("/chatbox/input", message.Address);
+        Assert.Equal(["Count 1", true, false], message.Values);
+        var status = fixture.State.Osc.GetSendStatus();
+        Assert.Equal(1, status.SentPacketCount);
+        Assert.Equal("/chatbox/input", status.LastSendAddress);
+        Assert.Empty(status.LastSendError);
+    }
+
+    [Fact]
     public void Templates_KeepUnknownFieldsAndFormatCounts()
         => Assert.Equal("Boops: 12,345 {unknown}", AppState.FormatTemplate("{name}: {count} {unknown}", "Boops", 12345));
 
