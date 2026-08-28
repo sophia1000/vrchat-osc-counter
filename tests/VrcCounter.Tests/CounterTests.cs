@@ -65,6 +65,27 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public async Task OscQuery_ChoosesAFreePortInsteadOfTheConfiguredLegacyPort()
+    {
+        using var blocker = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var blockedPort = ((System.Net.IPEndPoint)blocker.Client.LocalEndPoint!).Port;
+        var cfg = EmptyConfig();
+        cfg.OscTransport = AppConfig.OscQueryTransport;
+        cfg.OscInIp = System.Net.IPAddress.Loopback.ToString();
+        cfg.OscInPort = blockedPort;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.Osc.RestartAsync();
+
+        Assert.True(fixture.State.Osc.TransportRunning);
+        Assert.True(fixture.State.Osc.OscQueryRunning);
+        Assert.NotNull(fixture.State.Osc.OscQueryTcpPort);
+        Assert.NotEqual(blockedPort, fixture.State.Osc.InputPort);
+        Assert.True(fixture.State.Osc.InputPort > 0);
+        Assert.Equal("", fixture.State.Osc.ListenerError);
+    }
+
+    [Fact]
     public async Task ThresholdMode_UsesStrictHysteresisAndSharedAddress()
     {
         var cfg = EmptyConfig();

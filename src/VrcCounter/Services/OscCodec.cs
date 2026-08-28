@@ -97,6 +97,8 @@ public sealed class OscService : IAsyncDisposable
 {
     private readonly AppState _state;
     private readonly object _sendGate = new();
+    private readonly object _oscQueryGate = new();
+    private readonly SemaphoreSlim _restartGate = new(1, 1);
     private CancellationTokenSource? _listenerCts;
     private Task? _listener;
     private Socket? _senderSocket;
@@ -104,15 +106,21 @@ public sealed class OscService : IAsyncDisposable
     private IPEndPoint? _output;
     private OSCQueryService? _oscQuery;
     private int _listenerRunning;
+    private int _listenerPort;
     private long _sentPacketCount;
     private long _lastSendMs;
     private string _lastSendAddress = "";
     private string _lastSendError = "";
+    private string _listenerError = "";
+    private string _oscQueryError = "";
     public int? OscQueryTcpPort { get; private set; }
     public bool OscQueryRunning => _oscQuery is not null;
     public string SelectedTransport => _state.Read(c => c.OscTransport);
     public bool TransportRunning => Volatile.Read(ref _listenerRunning) == 1;
+    public int InputPort => Volatile.Read(ref _listenerPort);
     public bool LegacyOscRunning => SelectedTransport == AppConfig.LegacyOscTransport && TransportRunning;
+    public string ListenerError => Volatile.Read(ref _listenerError);
+    public string OscQueryError => Volatile.Read(ref _oscQueryError);
 
     public OscService(AppState state)
     {
@@ -232,53 +240,80 @@ public sealed class OscService : IAsyncDisposable
 
     public async Task RestartAsync()
     {
-        StopOscQuery();
-        if (_listenerCts is not null) { await _listenerCts.CancelAsync(); if (_listener is not null) try { await _listener; } catch { } _listenerCts.Dispose(); }
-        _listenerCts = new CancellationTokenSource(); _listener = ListenLoopAsync(_listenerCts.Token);
-        if (SelectedTransport == AppConfig.OscQueryTransport) StartOscQuery();
-    }
-
-    private void StartOscQuery()
-    {
+        await _restartGate.WaitAsync();
         try
         {
-            var cfg = _state.Snapshot();
-            var queryPort = VRC.OSCQuery.Extensions.GetAvailableTcpPort();
-            var oscIp = IPAddress.TryParse(cfg.OscInIp, out var configured) && !configured.Equals(IPAddress.Any)
-                ? configured
-                : IPAddress.Loopback;
-            var serviceName = $"VRC Counter-{Environment.MachineName}";
-            _oscQuery = new OSCQueryServiceBuilder()
-                .WithServiceName(serviceName)
-                .WithHostIP(IPAddress.Loopback)
-                .WithOscIP(oscIp)
-                .WithTcpPort(queryPort)
-                .WithUdpPort(cfg.OscInPort)
-                .WithDefaults()
-                .Build();
-
-            foreach (var counter in cfg.Counters.Values
-                         .Where(c => !string.IsNullOrWhiteSpace(c.Address))
-                         .GroupBy(c => c.Address, StringComparer.Ordinal)
-                         .Select(g => g.First()))
+            StopOscQuery();
+            Volatile.Write(ref _listenerPort, 0);
+            Volatile.Write(ref _listenerError, "");
+            Volatile.Write(ref _oscQueryError, "");
+            if (_listenerCts is not null)
             {
-                var oscType = counter.TriggerMode == "int_eq" ? "i" : "f";
-                _oscQuery.AddEndpoint(counter.Address, oscType, Attributes.AccessValues.WriteOnly,
-                    description: $"VRChat Counter input for {counter.Name}");
+                await _listenerCts.CancelAsync();
+                if (_listener is not null) try { await _listener; } catch { }
+                _listenerCts.Dispose();
             }
 
-            _oscQuery.RefreshServices();
-            OscQueryTcpPort = queryPort;
-            Console.WriteLine($"[OSCQuery] Advertising {serviceName} at HTTP {queryPort}, OSC {oscIp}:{cfg.OscInPort}");
+            var firstAttempt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _listenerCts = new CancellationTokenSource();
+            _listener = ListenLoopAsync(_listenerCts.Token, firstAttempt);
+            await firstAttempt.Task;
         }
-        catch (Exception ex)
+        finally { _restartGate.Release(); }
+    }
+
+    private void StartOscQuery(int inputPort)
+    {
+        lock (_oscQueryGate)
         {
-            StopOscQuery();
-            Console.Error.WriteLine($"[OSCQuery] Could not start: {ex.Message}");
+            if (_oscQuery is not null || SelectedTransport != AppConfig.OscQueryTransport) return;
+            try
+            {
+                var cfg = _state.Snapshot();
+                var queryPort = VRC.OSCQuery.Extensions.GetAvailableTcpPort();
+                var oscIp = IPAddress.TryParse(cfg.OscInIp, out var configured) && !configured.Equals(IPAddress.Any)
+                    ? configured
+                    : IPAddress.Loopback;
+                var serviceName = $"VRC Counter-{Environment.MachineName}";
+                _oscQuery = new OSCQueryServiceBuilder()
+                    .WithServiceName(serviceName)
+                    .WithHostIP(IPAddress.Loopback)
+                    .WithOscIP(oscIp)
+                    .WithTcpPort(queryPort)
+                    .WithUdpPort(inputPort)
+                    .WithDefaults()
+                    .Build();
+
+                foreach (var counter in cfg.Counters.Values
+                             .Where(c => !string.IsNullOrWhiteSpace(c.Address))
+                             .GroupBy(c => c.Address, StringComparer.Ordinal)
+                             .Select(g => g.First()))
+                {
+                    var oscType = counter.TriggerMode == "int_eq" ? "i" : "f";
+                    _oscQuery.AddEndpoint(counter.Address, oscType, Attributes.AccessValues.WriteOnly,
+                        description: $"VRChat Counter input for {counter.Name}");
+                }
+
+                _oscQuery.RefreshServices();
+                OscQueryTcpPort = queryPort;
+                Volatile.Write(ref _oscQueryError, "");
+                Console.WriteLine($"[OSCQuery] Advertising {serviceName} at HTTP {queryPort}, OSC {oscIp}:{inputPort}");
+            }
+            catch (Exception ex)
+            {
+                StopOscQueryLocked();
+                Volatile.Write(ref _oscQueryError, ex.Message);
+                Console.Error.WriteLine($"[OSCQuery] Could not start: {ex.Message}");
+            }
         }
     }
 
     private void StopOscQuery()
+    {
+        lock (_oscQueryGate) StopOscQueryLocked();
+    }
+
+    private void StopOscQueryLocked()
     {
         try { _oscQuery?.Dispose(); }
         catch (Exception ex) { Console.Error.WriteLine($"[OSCQuery] Stop error: {ex.Message}"); }
@@ -286,30 +321,44 @@ public sealed class OscService : IAsyncDisposable
         OscQueryTcpPort = null;
     }
 
-    private async Task ListenLoopAsync(CancellationToken token)
+    private async Task ListenLoopAsync(CancellationToken token, TaskCompletionSource<bool> firstAttempt)
     {
         while (!token.IsCancellationRequested)
         {
             UdpClient? udp = null;
+            var inputIp = "127.0.0.1";
+            var inputPort = 0;
             try
             {
-                var cfg = _state.Snapshot(); udp = new UdpClient(new IPEndPoint(IPAddress.Parse(cfg.OscInIp), cfg.OscInPort));
+                var cfg = _state.Snapshot();
+                inputIp = cfg.OscInIp;
+                inputPort = cfg.OscTransport == AppConfig.OscQueryTransport
+                    ? VRC.OSCQuery.Extensions.GetAvailableUdpPort()
+                    : cfg.OscInPort;
+                udp = new UdpClient(new IPEndPoint(IPAddress.Parse(inputIp), inputPort));
+                inputPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
                 Volatile.Write(ref _listenerRunning, 1);
+                Volatile.Write(ref _listenerPort, inputPort);
+                Volatile.Write(ref _listenerError, "");
                 var label = cfg.OscTransport == AppConfig.OscQueryTransport ? "OSCQuery" : "Legacy OSC";
-                Console.WriteLine($"[{label}] Listening on {cfg.OscInIp}:{cfg.OscInPort}");
+                Console.WriteLine($"[{label}] Listening on {inputIp}:{inputPort}");
+                if (cfg.OscTransport == AppConfig.OscQueryTransport) StartOscQuery(inputPort);
+                firstAttempt.TrySetResult(true);
                 while (!token.IsCancellationRequested)
                 {
                     var result = await udp.ReceiveAsync(token);
                     foreach (var message in OscCodec.Decode(result.Buffer)) _ = _state.HandleOscAsync(message.Address, message.Values);
                 }
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) { firstAttempt.TrySetResult(false); break; }
             catch (Exception ex)
             {
+                Volatile.Write(ref _listenerError, $"Could not listen on {inputIp}:{inputPort}. {ex.Message}");
+                firstAttempt.TrySetResult(false);
                 Console.Error.WriteLine($"[OSC] Listener error: {ex.Message}; retrying in 3s");
                 try { await Task.Delay(3000, token); } catch (OperationCanceledException) { break; }
             }
-            finally { Volatile.Write(ref _listenerRunning, 0); udp?.Dispose(); }
+            finally { Volatile.Write(ref _listenerRunning, 0); Volatile.Write(ref _listenerPort, 0); udp?.Dispose(); }
         }
     }
 

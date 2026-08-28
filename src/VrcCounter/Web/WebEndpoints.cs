@@ -81,7 +81,9 @@ public static class WebEndpoints
         app.MapPost("/api/home-graph-row-height", async (HttpRequest req) => { var d = await JsonSerializer.DeserializeAsync<RowHeight>(req.Body, JsonOptions.Default) ?? new(); state.SetRowHeight(d.Row, d.Height); return Results.Json(new { ok = true }); });
         app.MapPost("/update-global", async (HttpRequest req) =>
         {
-            var f = await req.ReadFormAsync(); var changes = state.UpdateGlobal(c =>
+            var f = await req.ReadFormAsync();
+            var forceReconnect = string.Equals(f["action"], "reconnect", StringComparison.Ordinal);
+            var changes = state.UpdateGlobal(c =>
             {
                 if (f.ContainsKey("osc_transport")) c.OscTransport = f["osc_transport"] == AppConfig.LegacyOscTransport ? AppConfig.LegacyOscTransport : AppConfig.OscQueryTransport;
                 c.OscInIp = ValueOr(f["osc_in_ip"], c.OscInIp); c.OscInPort = (int)ParseLong(f["osc_in_port"], c.OscInPort); c.OscOutIp = ValueOr(f["osc_out_ip"], c.OscOutIp); c.OscOutPort = (int)ParseLong(f["osc_out_port"], c.OscOutPort);
@@ -89,8 +91,22 @@ public static class WebEndpoints
                 var mode = f["chatbox_mode"].ToString(); c.ChatboxMode = mode is "modern" or "legacy2" or "both" ? mode : "modern"; c.ChatboxPerMinuteLimit = (int)ParseLong(f["chatbox_per_minute_limit"], c.ChatboxPerMinuteLimit); c.ChatboxMinIntervalMs = (int)ParseLong(f["chatbox_min_interval_ms"], c.ChatboxMinIntervalMs); c.ChatboxAutoClearMs = (int)ParseLong(f["chatbox_auto_clear_ms"], c.ChatboxAutoClearMs);
                 c.ChatboxEnabledByDefault = IsTrue(f["chatbox_enabled_by_default"]); c.ChatboxNotifyByDefault = IsTrue(f["chatbox_notify_by_default"]); c.CountersCompact = IsTrue(f["counters_compact"]); c.HomeGraphsColumns = Math.Clamp((int)ParseLong(f["home_graphs_columns"], c.HomeGraphsColumns), 1, 3);
             });
-            if (changes.RebuildOutput) state.Osc.RebuildOutput(); if (changes.RestartInput) await state.Osc.RestartAsync(); return Results.Redirect("/");
+            if (changes.RebuildOutput) state.Osc.RebuildOutput();
+            if (changes.RestartInput || forceReconnect) await state.Osc.RestartAsync();
+            return Results.Redirect("/");
         }).DisableAntiforgery();
+        app.MapPost("/api/osc/reconnect", async () =>
+        {
+            await state.Osc.RestartAsync();
+            return Results.Json(new
+            {
+                running = state.Osc.TransportRunning,
+                oscPort = state.Osc.InputPort,
+                listenerError = state.Osc.ListenerError,
+                oscQueryRunning = state.Osc.OscQueryRunning,
+                oscQueryError = state.Osc.OscQueryError
+            });
+        });
         app.MapPost("/api/window-size", async (HttpRequest req) => { var d = await JsonSerializer.DeserializeAsync<WindowSize>(req.Body, JsonOptions.Default) ?? new(); if (d.W > 0 && d.H > 0) state.SetWindowSize(d.W, d.H); return Results.Json(new { ok = true }); });
         app.MapGet("/api/oscquery/status", () => Results.Json(new
         {
@@ -100,7 +116,10 @@ public static class WebEndpoints
             oscQueryRunning = state.Osc.OscQueryRunning,
             legacyOscRunning = state.Osc.LegacyOscRunning,
             tcpPort = state.Osc.OscQueryTcpPort,
-            oscPort = state.Read(c => c.OscInPort)
+            oscPort = state.Osc.InputPort,
+            legacyOscPort = state.Read(c => c.OscInPort),
+            listenerError = state.Osc.ListenerError,
+            oscQueryError = state.Osc.OscQueryError
         }));
         app.MapGet("/api/chatbox/status", () =>
         {
@@ -131,7 +150,10 @@ public static class WebEndpoints
                 oscQueryRunning = state.Osc.OscQueryRunning,
                 legacyOscRunning = state.Osc.LegacyOscRunning,
                 tcpPort = state.Osc.OscQueryTcpPort,
-                oscPort = state.Read(c => c.OscInPort)
+                oscPort = state.Osc.InputPort,
+                legacyOscPort = state.Read(c => c.OscInPort),
+                listenerError = state.Osc.ListenerError,
+                oscQueryError = state.Osc.OscQueryError
             },
             oscquery = new { running = state.Osc.OscQueryRunning, tcpPort = state.Osc.OscQueryTcpPort }
         }));
