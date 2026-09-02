@@ -47,6 +47,18 @@ public sealed class CounterTests
         Assert.Equal(AppConfig.LegacyOscTransport, legacyAlias.OscTransport);
     }
 
+    [Theory]
+    [InlineData("raw")]
+    [InlineData("second")]
+    [InlineData("30seconds")]
+    public void GraphConfig_AcceptsNewBucketOptions(string bucket)
+    {
+        var graph = GraphConfig.Create("Test");
+        graph.Bucket = bucket;
+        graph.Normalize("Test");
+        Assert.Equal(bucket, graph.Bucket);
+    }
+
     [Fact]
     public async Task LegacyOscTransport_DoesNotStartOscQuery()
     {
@@ -171,7 +183,7 @@ public sealed class CounterTests
         var range = await fixture.Repository.GetRangeAsync(["History"]);
         Assert.Equal(new EventRange(1_000, 3_000, 3), range);
 
-        var series = await fixture.Repository.GetSeriesAsync("History", range!.StartMs, range.EndMs, "minute", "total", 99);
+        var series = await fixture.Repository.GetSeriesAsync("History", range!.StartMs, range.EndMs, "raw", "total", 99);
         Assert.Equal(3, series.EventCount);
         Assert.Contains(series.Points, p => p.T == 1_000 && p.V == 10);
         Assert.Contains(series.Points, p => p.T == 2_000 && p.V == 11);
@@ -185,11 +197,43 @@ public sealed class CounterTests
         await using var fixture = await Fixture.CreateAsync(cfg);
         for (var i = 0; i < 5_000; i++) await fixture.Repository.AddAsync("Large", i + 1, i * 60_000L);
 
-        var series = await fixture.Repository.GetSeriesAsync("Large", 0, 5_000L * 60_000L, "minute", "total", 5_000);
+        var series = await fixture.Repository.GetSeriesAsync("Large", 0, 5_000L * 60_000L, "auto", "total", 5_000);
         Assert.Equal(5_000, series.EventCount);
         Assert.InRange(series.Points.Count, 2, 4_002);
         Assert.True(series.BucketMs >= 60_000);
         Assert.Equal(5_000, series.Points[^1].V);
+
+        var fixedMinutes = await fixture.Repository.GetSeriesAsync("Large", 0, 4_999L * 60_000L, "minute", "total", 5_000);
+        Assert.Equal(5_000, fixedMinutes.Points.Count);
+        Assert.Equal(60_000, fixedMinutes.BucketMs);
+
+        var raw = await fixture.Repository.GetSeriesAsync("Large", 0, 4_999L * 60_000L, "raw", "total", 5_000);
+        Assert.Equal(5_000, raw.Points.Count);
+        Assert.Equal(0, raw.BucketMs);
+
+        var zoomedAuto = await fixture.Repository.GetSeriesAsync("Large", 0, 100L * 60_000L, "auto", "total", 5_000);
+        Assert.Equal(0, zoomedAuto.BucketMs);
+        Assert.Equal(101, zoomedAuto.EventCount);
+    }
+
+    [Fact]
+    public async Task EventRepository_SupportsSecondAndThirtySecondBuckets()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("Density", 1, 0);
+        await fixture.Repository.AddAsync("Density", 2, 500);
+        await fixture.Repository.AddAsync("Density", 3, 1_500);
+        await fixture.Repository.AddAsync("Density", 4, 31_000);
+
+        var seconds = await fixture.Repository.GetSeriesAsync("Density", 0, 31_000, "second", "delta", 4);
+        Assert.Equal(1_000, seconds.BucketMs);
+        Assert.Equal(2, seconds.Points.Single(p => p.T == 0).V);
+        Assert.Equal(1, seconds.Points.Single(p => p.T == 1_000).V);
+
+        var thirtySeconds = await fixture.Repository.GetSeriesAsync("Density", 0, 31_000, "30seconds", "delta", 4);
+        Assert.Equal(30_000, thirtySeconds.BucketMs);
+        Assert.Equal(3, thirtySeconds.Points.Single(p => p.T == 0).V);
+        Assert.Equal(1, thirtySeconds.Points.Single(p => p.T == 30_000).V);
     }
 
     [Fact]

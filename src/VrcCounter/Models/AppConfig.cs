@@ -106,7 +106,7 @@ public sealed class GraphConfig
 {
     [JsonPropertyName("counters")] public List<string> Counters { get; set; } = [];
     [JsonPropertyName("preset")] public string Preset { get; set; } = "all";
-    [JsonPropertyName("bucket")] public string Bucket { get; set; } = "minute";
+    [JsonPropertyName("bucket")] public string Bucket { get; set; } = "auto";
     [JsonPropertyName("mode")] public string Mode { get; set; } = "total";
     [JsonPropertyName("graphtype")] public string GraphType { get; set; } = "line";
     [JsonPropertyName("autoY")] public bool AutoY { get; set; } = true;
@@ -128,7 +128,7 @@ public sealed class GraphConfig
         Counters ??= [];
         Counters = Counters.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList();
         Preset = Preset is "all" or "10m" or "30m" or "1h" or "2h" or "5h" or "12h" or "1d" or "7d" or "30d" or "custom" ? Preset : "1h";
-        Bucket = Bucket is "minute" or "hour" or "day" or "auto" ? Bucket : "auto";
+        Bucket = Bucket is "raw" or "second" or "30seconds" or "minute" or "hour" or "day" or "auto" ? Bucket : "auto";
         Mode = Mode == "delta" ? "delta" : "total";
         GraphType = GraphType is "line" or "area" or "step" or "bar" ? GraphType : "line";
         AutoRefreshMs = Math.Clamp(AutoRefreshMs, 1_000, 3_600_000);

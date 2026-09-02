@@ -72,7 +72,16 @@ public sealed class EventRepository : IAsyncDisposable
     public async Task<EventSeries> GetSeriesAsync(string name, long startMs, long endMs, string bucket, string mode, long currentCount, EventRange? dataRange = null)
     {
         var rows = new List<(long Ts, long Count)>();
-        var requestedBucketMs = bucket switch { "minute" => 60_000L, "hour" => 3_600_000L, "day" => 86_400_000L, _ => 1L };
+        var forceRaw = bucket == "raw";
+        var requestedBucketMs = bucket switch
+        {
+            "second" => 1_000L,
+            "30seconds" => 30_000L,
+            "minute" => 60_000L,
+            "hour" => 3_600_000L,
+            "day" => 86_400_000L,
+            _ => 0L
+        };
         var rangeMs = endMs > startMs ? endMs - startMs : 1;
         long eventCount;
         long? before = null;
@@ -88,9 +97,17 @@ public sealed class EventRepository : IAsyncDisposable
             }
             await using (var cmd = _db.CreateCommand())
             {
-                if (mode == "delta" || eventCount > MaxSeriesPoints)
+                if (mode == "delta" && forceRaw)
                 {
-                    effectiveBucketMs = Math.Max(requestedBucketMs, (rangeMs + MaxSeriesPoints - 1) / MaxSeriesPoints);
+                    effectiveBucketMs = 0;
+                    cmd.CommandText = "SELECT ts_ms,COUNT(*) FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end GROUP BY ts_ms ORDER BY ts_ms";
+                }
+                else if (mode == "delta" || requestedBucketMs > 0 || (!forceRaw && eventCount > MaxSeriesPoints))
+                {
+                    var safetyBucketMs = (rangeMs + MaxSeriesPoints - 1) / MaxSeriesPoints;
+                    effectiveBucketMs = bucket == "auto"
+                        ? NiceAutoBucketMs(safetyBucketMs)
+                        : requestedBucketMs;
                     if (mode == "delta")
                         cmd.CommandText = "SELECT CAST((ts_ms-$start)/$size AS INTEGER)*$size+$start AS bucket_start,COUNT(*) FROM events WHERE counter=$counter AND ts_ms BETWEEN $start AND $end GROUP BY CAST((ts_ms-$start)/$size AS INTEGER) ORDER BY bucket_start";
                     else
@@ -115,11 +132,47 @@ public sealed class EventRepository : IAsyncDisposable
         var points = new List<EventPoint>(); long max = 0;
         if (mode == "delta")
         {
-            var buckets = rows.ToDictionary(x => x.Ts, x => x.Count);
-            for (var t = startMs; t <= endMs; t += effectiveBucketMs)
+            if (effectiveBucketMs == 0)
             {
-                var value = buckets.GetValueOrDefault(t); points.Add(new(t, value)); max = Math.Max(max, value);
-                if (t > long.MaxValue - effectiveBucketMs) break;
+                foreach (var row in rows) { points.Add(new(row.Ts, row.Count)); max = Math.Max(max, row.Count); }
+            }
+            else
+            {
+                var buckets = rows.ToDictionary(x => x.Ts, x => x.Count);
+                var slots = rangeMs / effectiveBucketMs + 1;
+                if (slots <= MaxReturnedSeriesPoints)
+                {
+                    for (var t = startMs; t <= endMs; t += effectiveBucketMs)
+                    {
+                        var value = buckets.GetValueOrDefault(t); points.Add(new(t, value)); max = Math.Max(max, value);
+                        if (t > long.MaxValue - effectiveBucketMs) break;
+                    }
+                }
+                else
+                {
+                    void AddSparse(long t, long value)
+                    {
+                        if (points.Count > 0 && points[^1].T == t) points[^1] = new(t, value);
+                        else points.Add(new(t, value));
+                        max = Math.Max(max, value);
+                    }
+
+                    long? previous = null;
+                    foreach (var row in rows)
+                    {
+                        if (!previous.HasValue && row.Ts > startMs) AddSparse(startMs, 0);
+                        if (previous.HasValue && row.Ts > previous.Value + effectiveBucketMs)
+                        {
+                            AddSparse(previous.Value + effectiveBucketMs, 0);
+                            if (row.Ts - effectiveBucketMs > previous.Value + effectiveBucketMs) AddSparse(row.Ts - effectiveBucketMs, 0);
+                        }
+                        AddSparse(row.Ts, row.Count);
+                        previous = row.Ts;
+                    }
+                    if (!previous.HasValue) AddSparse(startMs, 0);
+                    if (previous.HasValue && previous.Value < endMs) AddSparse(Math.Min(endMs, previous.Value + effectiveBucketMs), 0);
+                    if (points[^1].T < endMs) AddSparse(endMs, 0);
+                }
             }
         }
         else
@@ -130,6 +183,15 @@ public sealed class EventRepository : IAsyncDisposable
             if (last.HasValue && (points.Count == 0 || points[^1].T < endMs)) points.Add(new(endMs, last.Value));
         }
         return new(name, points, max, eventCount, effectiveBucketMs, dataRange?.StartMs, dataRange?.EndMs, currentCount);
+    }
+
+    private static long NiceAutoBucketMs(long minimumMs)
+    {
+        long[] steps = [1_000, 5_000, 10_000, 30_000, 60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000,
+            3_600_000, 6 * 3_600_000, 12 * 3_600_000, 86_400_000, 7 * 86_400_000, 30 * 86_400_000L];
+        foreach (var step in steps) if (step >= minimumMs) return step;
+        var month = 30 * 86_400_000L;
+        return ((minimumMs + month - 1) / month) * month;
     }
 
     public async Task<GraphTimeline> GetTimelineAsync(

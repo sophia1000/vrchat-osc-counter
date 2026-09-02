@@ -188,7 +188,7 @@ public static class WebEndpoints
         if (IsTrue(query["all"].FirstOrDefault())) preset = "all";
         if (preset is not ("all" or "10m" or "30m" or "1h" or "2h" or "5h" or "12h" or "1d" or "7d" or "30d" or "custom")) preset = "1h";
         var bucket = query["bucket"].FirstOrDefault() ?? graph?.Bucket ?? "auto";
-        if (bucket is not ("auto" or "minute" or "hour" or "day")) bucket = "auto";
+        if (bucket is not ("auto" or "raw" or "second" or "30seconds" or "minute" or "hour" or "day")) bucket = "auto";
         var mode = (query["mode"].FirstOrDefault() ?? graph?.Mode) == "delta" ? "delta" : "total";
         var follow = query.ContainsKey("follow") ? IsTrue(query["follow"].FirstOrDefault()) : graph?.AutoFollow ?? true;
         var reset = IsTrue(query["reset"].FirstOrDefault()) || IsTrue(query["all"].FirstOrDefault());
