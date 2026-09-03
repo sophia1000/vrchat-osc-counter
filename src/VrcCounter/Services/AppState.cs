@@ -95,8 +95,9 @@ public sealed partial class AppState
 
     public void ToggleChatbox(string name, bool on)
     {
-        lock (_gate) if (_config.Counters.TryGetValue(name, out var c)) c.SendChatbox = on;
-        Changed(new { type = "counter_toggle", name });
+        var changed = false;
+        lock (_gate) if (_config.Counters.TryGetValue(name, out var c)) { c.SendChatbox = on; changed = true; }
+        if (changed) Changed(new { type = "counter_toggle", name, send_chatbox = on });
     }
 
     public bool SetCounterOrder(IEnumerable<string> requested)
@@ -144,8 +145,10 @@ public sealed partial class AppState
 
     public void SetRowHeight(int row, int height)
     {
+        if (row < 0) return;
+        height = Math.Clamp(height, 130, 1200);
         lock (_gate) { while (_config.HomeGraphRowHeights.Count <= row) _config.HomeGraphRowHeights.Add(0); _config.HomeGraphRowHeights[row] = height; }
-        Changed(new { type = "graph_row_height" });
+        Changed(new { type = "graph_row_height", row, height });
     }
 
     public void SetWindowSize(int width, int height)
@@ -158,9 +161,8 @@ public sealed partial class AppState
     {
         bool input, output; lock (_gate)
         {
-            var oldIn = (_config.OscInIp, _config.OscInPort); var oldOut = (_config.OscOutIp, _config.OscOutPort);
-            update(_config); _config.Normalize(); input = oldIn != (_config.OscInIp, _config.OscInPort); output = oldOut != (_config.OscOutIp, _config.OscOutPort);
-            Chatbox = new ChatboxService(this);
+            var oldIn = (_config.OscTransport, _config.OscInIp, _config.OscInPort); var oldOut = (_config.OscOutIp, _config.OscOutPort);
+            update(_config); _config.Normalize(); input = oldIn != (_config.OscTransport, _config.OscInIp, _config.OscInPort); output = oldOut != (_config.OscOutIp, _config.OscOutPort);
         }
         Changed(new { type = "global" }); return (input, output);
     }
@@ -187,9 +189,19 @@ public sealed partial class AppState
 
 public sealed class ChatboxService
 {
+    public const int VrchatBurstLimit = 5;
+    public const int VrchatRateWindowMs = 5000;
+
     private readonly AppState _state; private readonly object _gate = new(); private readonly Dictionary<string, long> _pending = [];
+    private readonly SemaphoreSlim _sendQueue = new(1, 1);
     private readonly Queue<long> _sent = []; private long _lastSent; private bool _flushScheduled; private long _clearGeneration;
     public ChatboxService(AppState state) => _state = state;
+    public int PendingCount { get { lock (_gate) return _pending.Count; } }
+
+    public Task<bool> SendTestAsync() => SendModeAsync(
+        _state.Snapshot().ChatboxMode,
+        $"VRChat Counter test {DateTime.Now:HH:mm:ss}",
+        true);
 
     public void Changed(string name, long timestamp) { lock (_gate) _pending[name] = timestamp; _ = FlushOrScheduleAsync(); }
     private long WaitMs()
@@ -198,9 +210,14 @@ public sealed class ChatboxService
         lock (_gate)
         {
             while (_sent.Count > 0 && _sent.Peek() < now - 60_000) _sent.Dequeue();
-            var interval = Math.Max(0, cfg.ChatboxMinIntervalMs - (now - _lastSent));
+            var intervalMs = Math.Max(AppConfig.VrchatChatboxMinimumIntervalMs, cfg.ChatboxMinIntervalMs);
+            var interval = Math.Max(0, intervalMs - (now - _lastSent));
+            var recent = _sent.Where(timestamp => timestamp > now - VrchatRateWindowMs).ToArray();
+            var vrchatWindow = recent.Length >= VrchatBurstLimit
+                ? Math.Max(0, recent[^VrchatBurstLimit] + VrchatRateWindowMs - now)
+                : 0;
             var perMinute = _sent.Count >= Math.Max(1, cfg.ChatboxPerMinuteLimit) ? Math.Max(0, _sent.Peek() + 60_000 - now) : 0;
-            return Math.Max(interval, perMinute);
+            return Math.Max(interval, Math.Max(vrchatWindow, perMinute));
         }
     }
     private async Task FlushOrScheduleAsync()
@@ -216,15 +233,43 @@ public sealed class ChatboxService
         foreach (var item in pending)
             if (cfg.Counters.TryGetValue(item.Key, out var counter)) { lines.Add(AppState.FormatTemplate(counter.ChatboxTemplate, item.Key, counter.Count)); notify |= counter.ChatboxNotify; }
         if (lines.Count == 0) return;
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        lock (_gate) { _sent.Enqueue(now); _lastSent = now; foreach (var item in pending) _pending.Remove(item.Key); }
+        lock (_gate) foreach (var item in pending) _pending.Remove(item.Key);
         await SendModeAsync(cfg.ChatboxMode, string.Join("\n", lines), notify);
         var generation = Interlocked.Increment(ref _clearGeneration);
         if (cfg.ChatboxAutoClearMs > 0) _ = Task.Run(async () => { await Task.Delay(cfg.ChatboxAutoClearMs); if (Interlocked.Read(ref _clearGeneration) == generation) await SendModeAsync(_state.Snapshot().ChatboxMode, "", false); });
     }
-    private async Task SendModeAsync(string mode, string text, bool notify)
+    private async Task<bool> SendModeAsync(string mode, string text, bool notify)
     {
-        if (mode is "modern" or "both") await _state.Osc.SendAsync("/chatbox/input", text, true, notify);
-        if (mode is "legacy2" or "both") await _state.Osc.SendAsync("/chatbox/input", text, true);
+        var sent = false;
+        if (mode is "modern" or "both") sent |= await SendPacketRateLimitedAsync(text, true, notify);
+        if (mode is "legacy2" or "both") sent |= await SendPacketRateLimitedAsync(text, true);
+        return sent;
+    }
+
+    private async Task<bool> SendPacketRateLimitedAsync(params object[] values)
+    {
+        await _sendQueue.WaitAsync();
+        try
+        {
+            while (true)
+            {
+                var wait = WaitMs();
+                if (wait <= 0) break;
+                await Task.Delay((int)Math.Min(int.MaxValue, wait + 10));
+            }
+
+            var sent = await _state.Osc.SendAsync("/chatbox/input", values);
+            if (sent)
+            {
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                lock (_gate)
+                {
+                    _sent.Enqueue(now);
+                    _lastSent = now;
+                }
+            }
+            return sent;
+        }
+        finally { _sendQueue.Release(); }
     }
 }

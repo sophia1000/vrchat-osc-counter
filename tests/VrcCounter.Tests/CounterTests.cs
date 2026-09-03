@@ -31,6 +31,73 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public void ConfigMigration_DefaultsMissingOrInvalidOscTransportToOscQuery()
+    {
+        var missing = JsonSerializer.Deserialize<AppConfig>("{}", JsonOptions.Default)!;
+        missing.Normalize();
+        Assert.Equal(AppConfig.CurrentConfigVersion, missing.ConfigVersion);
+        Assert.Equal(AppConfig.OscQueryTransport, missing.OscTransport);
+
+        var invalid = JsonSerializer.Deserialize<AppConfig>("{\"osc_transport\":\"both\"}", JsonOptions.Default)!;
+        invalid.Normalize();
+        Assert.Equal(AppConfig.OscQueryTransport, invalid.OscTransport);
+
+        var legacyAlias = JsonSerializer.Deserialize<AppConfig>("{\"osc_transport\":\"normal\"}", JsonOptions.Default)!;
+        legacyAlias.Normalize();
+        Assert.Equal(AppConfig.LegacyOscTransport, legacyAlias.OscTransport);
+    }
+
+    [Theory]
+    [InlineData("raw")]
+    [InlineData("second")]
+    [InlineData("30seconds")]
+    public void GraphConfig_AcceptsNewBucketOptions(string bucket)
+    {
+        var graph = GraphConfig.Create("Test");
+        graph.Bucket = bucket;
+        graph.Normalize("Test");
+        Assert.Equal(bucket, graph.Bucket);
+    }
+
+    [Fact]
+    public async Task LegacyOscTransport_DoesNotStartOscQuery()
+    {
+        var cfg = EmptyConfig();
+        cfg.OscTransport = AppConfig.LegacyOscTransport;
+        cfg.OscInPort = 0;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.Osc.RestartAsync();
+
+        Assert.Equal(AppConfig.LegacyOscTransport, fixture.State.Osc.SelectedTransport);
+        Assert.True(fixture.State.Osc.TransportRunning);
+        Assert.True(fixture.State.Osc.LegacyOscRunning);
+        Assert.False(fixture.State.Osc.OscQueryRunning);
+        Assert.Null(fixture.State.Osc.OscQueryTcpPort);
+    }
+
+    [Fact]
+    public async Task OscQuery_ChoosesAFreePortInsteadOfTheConfiguredLegacyPort()
+    {
+        using var blocker = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var blockedPort = ((System.Net.IPEndPoint)blocker.Client.LocalEndPoint!).Port;
+        var cfg = EmptyConfig();
+        cfg.OscTransport = AppConfig.OscQueryTransport;
+        cfg.OscInIp = System.Net.IPAddress.Loopback.ToString();
+        cfg.OscInPort = blockedPort;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.Osc.RestartAsync();
+
+        Assert.True(fixture.State.Osc.TransportRunning);
+        Assert.True(fixture.State.Osc.OscQueryRunning);
+        Assert.NotNull(fixture.State.Osc.OscQueryTcpPort);
+        Assert.NotEqual(blockedPort, fixture.State.Osc.InputPort);
+        Assert.True(fixture.State.Osc.InputPort > 0);
+        Assert.Equal("", fixture.State.Osc.ListenerError);
+    }
+
+    [Fact]
     public async Task ThresholdMode_UsesStrictHysteresisAndSharedAddress()
     {
         var cfg = EmptyConfig();
@@ -54,6 +121,53 @@ public sealed class CounterTests
     }
 
     [Fact]
+    public async Task ChatboxTrigger_SendsVrchatPacketAndReportsDeliveryToUdp()
+    {
+        using var receiver = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var cfg = EmptyConfig(); var c = CounterConfig.Create("Chat", "/chat");
+        c.DebounceMs = 0; c.SendChatbox = true; c.ChatboxNotify = false; c.ChatboxTemplate = "🎀 Count {count}";
+        cfg.Counters[c.Name] = c; cfg.CounterOrder.Add(c.Name);
+        cfg.OscOutPort = ((System.Net.IPEndPoint)receiver.Client.LocalEndPoint!).Port;
+        cfg.ChatboxMinIntervalMs = 0; cfg.ChatboxAutoClearMs = 0;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        await fixture.State.HandleOscAsync("/chat", [.6f]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var datagram = await receiver.ReceiveAsync(timeout.Token);
+        var message = Assert.Single(OscCodec.Decode(datagram.Buffer));
+        var pythonOscPacket = Convert.FromHexString("2F63686174626F782F696E70757400002C73544600000000F09F8E8020436F756E74203100000000");
+
+        Assert.Equal(pythonOscPacket, datagram.Buffer);
+        Assert.Equal("/chatbox/input", message.Address);
+        Assert.Equal(["🎀 Count 1", true, false], message.Values);
+        var status = fixture.State.Osc.GetSendStatus();
+        Assert.Equal(1, status.SentPacketCount);
+        Assert.Equal("/chatbox/input", status.LastSendAddress);
+        Assert.Empty(status.LastSendError);
+    }
+
+    [Fact]
+    public async Task ChatboxLimiter_AppliesOneSecondFloorToEverySendPath()
+    {
+        using var receiver = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var cfg = EmptyConfig();
+        cfg.OscOutPort = ((System.Net.IPEndPoint)receiver.Client.LocalEndPoint!).Port;
+        cfg.ChatboxMinIntervalMs = 0;
+        cfg.ChatboxPerMinuteLimit = 100;
+        await using var fixture = await Fixture.CreateAsync(cfg);
+
+        Assert.True(await fixture.State.Chatbox.SendTestAsync());
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(await fixture.State.Chatbox.SendTestAsync());
+        timer.Stop();
+
+        Assert.InRange(timer.ElapsedMilliseconds, 900, 5000);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await receiver.ReceiveAsync(timeout.Token);
+        await receiver.ReceiveAsync(timeout.Token);
+    }
+
+    [Fact]
     public void Templates_KeepUnknownFieldsAndFormatCounts()
         => Assert.Equal("Boops: 12,345 {unknown}", AppState.FormatTemplate("{name}: {count} {unknown}", "Boops", 12345));
 
@@ -69,7 +183,7 @@ public sealed class CounterTests
         var range = await fixture.Repository.GetRangeAsync(["History"]);
         Assert.Equal(new EventRange(1_000, 3_000, 3), range);
 
-        var series = await fixture.Repository.GetSeriesAsync("History", range!.StartMs, range.EndMs, "minute", "total", 99);
+        var series = await fixture.Repository.GetSeriesAsync("History", range!.StartMs, range.EndMs, "raw", "total", 99);
         Assert.Equal(3, series.EventCount);
         Assert.Contains(series.Points, p => p.T == 1_000 && p.V == 10);
         Assert.Contains(series.Points, p => p.T == 2_000 && p.V == 11);
@@ -83,11 +197,106 @@ public sealed class CounterTests
         await using var fixture = await Fixture.CreateAsync(cfg);
         for (var i = 0; i < 5_000; i++) await fixture.Repository.AddAsync("Large", i + 1, i * 60_000L);
 
-        var series = await fixture.Repository.GetSeriesAsync("Large", 0, 5_000L * 60_000L, "minute", "total", 5_000);
+        var series = await fixture.Repository.GetSeriesAsync("Large", 0, 5_000L * 60_000L, "auto", "total", 5_000);
         Assert.Equal(5_000, series.EventCount);
         Assert.InRange(series.Points.Count, 2, 4_002);
         Assert.True(series.BucketMs >= 60_000);
         Assert.Equal(5_000, series.Points[^1].V);
+
+        var fixedMinutes = await fixture.Repository.GetSeriesAsync("Large", 0, 4_999L * 60_000L, "minute", "total", 5_000);
+        Assert.Equal(5_000, fixedMinutes.Points.Count);
+        Assert.Equal(60_000, fixedMinutes.BucketMs);
+
+        var raw = await fixture.Repository.GetSeriesAsync("Large", 0, 4_999L * 60_000L, "raw", "total", 5_000);
+        Assert.Equal(5_000, raw.Points.Count);
+        Assert.Equal(0, raw.BucketMs);
+
+        var zoomedAuto = await fixture.Repository.GetSeriesAsync("Large", 0, 100L * 60_000L, "auto", "total", 5_000);
+        Assert.Equal(0, zoomedAuto.BucketMs);
+        Assert.Equal(101, zoomedAuto.EventCount);
+    }
+
+    [Fact]
+    public async Task EventRepository_SupportsSecondAndThirtySecondBuckets()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("Density", 1, 0);
+        await fixture.Repository.AddAsync("Density", 2, 500);
+        await fixture.Repository.AddAsync("Density", 3, 1_500);
+        await fixture.Repository.AddAsync("Density", 4, 31_000);
+
+        var seconds = await fixture.Repository.GetSeriesAsync("Density", 0, 31_000, "second", "delta", 4);
+        Assert.Equal(1_000, seconds.BucketMs);
+        Assert.Equal(2, seconds.Points.Single(p => p.T == 0).V);
+        Assert.Equal(1, seconds.Points.Single(p => p.T == 1_000).V);
+
+        var thirtySeconds = await fixture.Repository.GetSeriesAsync("Density", 0, 31_000, "30seconds", "delta", 4);
+        Assert.Equal(30_000, thirtySeconds.BucketMs);
+        Assert.Equal(3, thirtySeconds.Points.Single(p => p.T == 0).V);
+        Assert.Equal(1, thirtySeconds.Points.Single(p => p.T == 30_000).V);
+    }
+
+    [Fact]
+    public async Task EventRepository_ReportsCombinedAndPerCounterDataBounds()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 1, 1_000);
+        await fixture.Repository.AddAsync("A", 2, 2_000);
+        await fixture.Repository.AddAsync("B", 7, 500);
+        await fixture.Repository.AddAsync("B", 8, 4_000);
+
+        var ranges = await fixture.Repository.GetRangesAsync(["A", "B", "Missing"]);
+        Assert.Equal(new EventRange(1_000, 2_000, 2), ranges["A"]);
+        Assert.Equal(new EventRange(500, 4_000, 2), ranges["B"]);
+        Assert.False(ranges.ContainsKey("Missing"));
+        Assert.Equal(new EventRange(500, 4_000, 4), await fixture.Repository.GetRangeAsync(["A", "B", "Missing"]));
+    }
+
+    [Fact]
+    public async Task Timeline_UsesPresetAsInitialViewportAndKeepsFullZoomBounds()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 1, 1_000);
+        await fixture.Repository.AddAsync("A", 2, 7_201_000);
+
+        var timeline = await fixture.Repository.GetTimelineAsync(
+            ["A"], new Dictionary<string, long> { ["A"] = 2 }, null, null,
+            "1h", "auto", "total", true, 9_000_000);
+
+        Assert.Equal(new TimelineBounds(1_000, 7_201_000, 2), timeline.DataBounds);
+        Assert.Equal(new TimelineViewport(3_601_000, 7_201_000), timeline.Viewport);
+        Assert.True(timeline.Follow);
+        Assert.Equal(9_000_000, timeline.ServerNowMs);
+        Assert.Equal(1_000, timeline.Series[0].DataStartMs);
+        Assert.Equal(7_201_000, timeline.Series[0].DataEndMs);
+    }
+
+    [Fact]
+    public async Task Timeline_ClampsUserViewportToRecordedDataAndDoesNotInventMissingHistory()
+    {
+        await using var fixture = await Fixture.CreateAsync(EmptyConfig());
+        await fixture.Repository.AddAsync("A", 4, 1_000);
+        await fixture.Repository.AddAsync("A", 5, 2_000);
+
+        var timeline = await fixture.Repository.GetTimelineAsync(
+            ["A", "Missing"], new Dictionary<string, long> { ["A"] = 5, ["Missing"] = 999 },
+            -10_000, 50_000, "all", "auto", "total", false, 60_000);
+
+        Assert.Equal(new TimelineViewport(1_000, 2_000), timeline.Viewport);
+        Assert.Equal(["A", "Missing"], timeline.SelectedCounters);
+        Assert.Equal(2, timeline.Series.Count);
+        Assert.Empty(timeline.Series.Single(x => x.Name == "Missing").Points);
+        Assert.Null(timeline.Series.Single(x => x.Name == "Missing").DataStartMs);
+        Assert.Equal(999, timeline.Series.Single(x => x.Name == "Missing").CurrentValue);
+    }
+
+    [Fact]
+    public void TimelineViewportResolver_NormalizesAndClampsExplicitSelection()
+    {
+        var bounds = new EventRange(1_000, 5_000, 8);
+        Assert.Equal(new TimelineViewport(1_000, 5_000), TimelineViewportResolver.Resolve(bounds, 9_000, -2_000, "1h", null, null, 10_000));
+        Assert.Equal(new TimelineViewport(2_000, 4_000), TimelineViewportResolver.Resolve(bounds, null, null, "custom", 4_000, 2_000, 10_000));
+        Assert.Equal(new TimelineViewport(10_000, 10_000), TimelineViewportResolver.Resolve(null, null, null, "all", null, null, 10_000));
     }
 
     private static AppConfig EmptyConfig() => new() { Counters = [], CounterOrder = [], Graphs = new() { ["g1"] = GraphConfig.Create("Test") }, GraphOrder = ["g1"] };

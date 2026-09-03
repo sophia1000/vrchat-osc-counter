@@ -17,9 +17,11 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
         var cfg = state.Snapshot(); var rows = new StringBuilder(); var tiles = new StringBuilder();
         foreach (var name in cfg.CounterOrder)
         {
-            if (!cfg.Counters.TryGetValue(name, out var c)) continue; var enc = Uri.EscapeDataString(name); var chk = c.SendChatbox ? "checked" : "";
-            rows.Append($"<tr draggable='true' data-name='{H(name)}'><td class='drag'>⋮⋮</td><td><span class='pill'>{H(name)}</span></td><td><code>{H(c.Address)}</code></td><td class='count'>{c.Count:N0}</td><td><input class='chatToggle' type='checkbox' {chk}></td><td><a class='btn sm' href='/edit/{enc}'>Edit</a></td></tr>");
-            tiles.Append($"<div class='tile' draggable='true' data-name='{H(name)}'><div><b>{H(name)}</b><strong class='count'>{c.Count:N0}</strong></div><footer><label><input class='chatToggle' type='checkbox' {chk}> Chatbox</label><a class='btn sm' href='/edit/{enc}'>Edit</a></footer></div>");
+            if (!cfg.Counters.TryGetValue(name, out var c)) continue; var enc = Uri.EscapeDataString(name);
+            var pressed = c.SendChatbox ? "true" : "false";
+            var on = c.SendChatbox ? " on" : "";
+            rows.Append($"<tr draggable='true' data-name='{H(name)}'><td class='drag'>⋮⋮</td><td><span class='pill'>{H(name)}</span></td><td><code>{H(c.Address)}</code></td><td class='count'>{c.Count:N0}</td><td><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button></td><td><a class='btn sm' href='/edit/{enc}'>Edit</a></td></tr>");
+            tiles.Append($"<div class='tile' draggable='true' data-name='{H(name)}'><div><b>{H(name)}</b><strong class='count'>{c.Count:N0}</strong></div><footer><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button><a class='btn sm' href='/edit/{enc}'>Edit</a></footer></div>");
         }
         var graphs = new StringBuilder(); var graphIndex = 0;
         foreach (var gid in cfg.GraphOrder)
@@ -27,13 +29,15 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
             if (!cfg.Graphs.TryGetValue(gid, out var g)) continue;
             var row = graphIndex / cfg.HomeGraphsColumns;
             var savedRowHeight = row < cfg.HomeGraphRowHeights.Count ? cfg.HomeGraphRowHeights[row] : 0;
-            var height = Math.Clamp(savedRowHeight > 0 ? savedRowHeight : g.MiniHeightPx, 120, 1200);
-            graphs.Append($"<article class='graph' data-gid='{H(gid)}'><header><b>{H(g.Name)}</b><span><a class='btn sm' href='/graph?gid={Uri.EscapeDataString(gid)}'>Edit</a><a class='btn sm danger' href='/delete-graph/{Uri.EscapeDataString(gid)}' onclick=\"return confirm('Delete this graph?')\">Delete</a></span></header><div class='chartwrap' style='height:{height}px'><canvas></canvas></div></article>");
+            var legacyHeight = g.MiniHeightPx >= 1200 ? 160 : g.MiniHeightPx;
+            var height = Math.Clamp(savedRowHeight > 0 ? savedRowHeight : legacyHeight, 130, 1200);
+            graphs.Append($"<article class='graph' data-gid='{H(gid)}' data-row='{row}'><header><b>{H(g.Name)}</b><span><a class='btn sm' href='/graph?gid={Uri.EscapeDataString(gid)}'>Edit</a><a class='btn sm danger' href='/delete-graph/{Uri.EscapeDataString(gid)}' onclick=\"return confirm('Delete this graph?')\">Delete</a></span></header><div class='chartwrap' style='height:{height}px'><canvas></canvas></div></article>");
             graphIndex++;
         }
         return Replace(Load("index.html"), new()
         {
             ["rows"] = rows.Length > 0 ? rows.ToString() : "<tr><td colspan='6'><em>No counters yet.</em></td></tr>", ["tiles"] = tiles.ToString(), ["graphs"] = graphs.ToString(),
+            ["oscquery_transport"] = Selected(cfg.OscTransport == AppConfig.OscQueryTransport), ["legacy_osc_transport"] = Selected(cfg.OscTransport == AppConfig.LegacyOscTransport),
             ["osc_in_ip"] = H(cfg.OscInIp), ["osc_in_port"] = cfg.OscInPort.ToString(), ["osc_out_ip"] = H(cfg.OscOutIp), ["osc_out_port"] = cfg.OscOutPort.ToString(),
             ["web_ui_bind"] = H(cfg.WebUiBind), ["web_ui_port"] = cfg.WebUiPort.ToString(), ["save_throttle_ms"] = cfg.SaveThrottleMs.ToString(),
             ["modern"] = Selected(cfg.ChatboxMode == "modern"), ["legacy2"] = Selected(cfg.ChatboxMode == "legacy2"), ["both"] = Selected(cfg.ChatboxMode == "both"),

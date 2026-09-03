@@ -6,17 +6,21 @@ parameter triggers, sending formatted Chatbox updates, and graphing counter hist
 Features include:
 
 - Multiple counters with threshold/hysteresis or integer-equality triggers
-- OSCQuery discovery and automatic receiver advertisement
+- OSCQuery discovery and automatic receiver advertisement, with a legacy OSC-only input mode
 - SQLite event history with responsive, downsampled long-range graphs
-- Multiple Grafana-style dashboards with zoom, pan, ranges, and delta/total modes
+- Multiple Grafana-style dashboards with bounded zoom, drag-to-select, pan, live follow,
+  per-series visibility, resizable panels, and delta/total modes
 - VRChat Chatbox templates, aggregation, rate limiting, and auto-clear
 - A native Windows shell powered by WebView2
 
-OSCQuery starts automatically with the OSC listener. It advertises this app's OSC input
-port and configured counter addresses so VRChat can discover the receiver automatically.
+OSCQuery is the default input mode. It runs the UDP OSC receiver and advertises the input
+port and configured counter addresses so VRChat can discover them automatically. The
+global settings can instead select **Legacy OSC**, which keeps the UDP receiver but turns
+off OSCQuery discovery. The two input modes are mutually exclusive.
 
-Graphs read the SQLite event history. Choose **All recorded history** to show every stored
-change; shorter ranges intentionally show only events inside their selected time window.
+Graphs read the SQLite event history. Time presets define the initial and reset viewport;
+they do not hide older history. Zooming and panning are bounded by the first and last real
+events, and the default live-follow mode advances as new events arrive.
 
 ## Run
 
