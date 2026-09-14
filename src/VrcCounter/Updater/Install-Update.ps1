@@ -23,7 +23,8 @@ function Resolve-Child([string]$Root, [string]$Relative) {
 
 function Start-Counter {
     $exe = Join-Path $plan.InstallDirectory 'VrcCounter.exe'
-    Start-Process -FilePath $exe -WorkingDirectory $plan.DataDirectory -ArgumentList @('--data-dir', ('"' + $plan.DataDirectory.TrimEnd('\') + '"')) -WindowStyle Hidden | Out-Null
+    # Only the PowerShell helper is hidden. This is a WinExe and needs its UI visible.
+    Start-Process -FilePath $exe -WorkingDirectory $plan.DataDirectory -ArgumentList @('--data-dir', ('"' + $plan.DataDirectory.TrimEnd('\') + '"')) -WindowStyle Normal | Out-Null
 }
 
 try {

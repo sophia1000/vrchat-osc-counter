@@ -180,7 +180,7 @@ public sealed class UpdateAndParameterTests
         Assert.True(File.Exists(marker));
         using var restarted = JsonDocument.Parse(await File.ReadAllTextAsync(marker));
         Assert.Equal(install, restarted.RootElement.GetProperty("WorkingDirectory").GetString());
-        Assert.Equal("Hidden", restarted.RootElement.GetProperty("WindowStyle").GetString());
+        Assert.Equal("Normal", restarted.RootElement.GetProperty("WindowStyle").GetString());
     }
 
     [Fact]
