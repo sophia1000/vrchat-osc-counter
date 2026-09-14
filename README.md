@@ -22,7 +22,25 @@ Graphs read the SQLite event history. Time presets define the initial and reset 
 they do not hide older history. Zooming and panning are bounded by the first and last real
 events, and the default live-follow mode advances as new events arrive.
 
-## Run
+## Download and run (no build needed)
+
+Download **VRChat-OSC-Counter-Windows-x64.zip** from the
+[latest release](https://github.com/sophia1000/vrchat-osc-counter/releases/latest).
+Extract the entire folder into Documents or another writable location, then
+double-click **VrcCounter.exe**. Do not run it from inside the ZIP.
+
+The download includes .NET. You only need Windows 10/11 x64, the Microsoft Edge
+WebView2 Runtime (normally already installed), and OSC enabled in VRChat.
+Read `START-HERE.txt` in the download for setup and update instructions.
+Configure the counter addresses to match your avatar's parameters.
+
+GitHub Actions builds a download for every main/development branch push and PR.
+Tagged versions (`v*`) automatically publish a public release with a ZIP and
+SHA-256 checksum. Development downloads are under the completed
+[Windows download workflow](https://github.com/sophia1000/vrchat-osc-counter/actions/workflows/windows-build.yml)
+run's Artifacts section (GitHub sign-in required).
+
+## Build from source
 
 Requirements:
 
