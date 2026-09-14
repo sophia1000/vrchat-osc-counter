@@ -19,7 +19,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"VRChat Counter could not start.\n\n{ex}", "VRChat Counter startup error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!args.Contains("--smoke-test")) MessageBox.Show($"VRChat Counter could not start.\n\n{ex}", "VRChat Counter startup error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             Environment.ExitCode = 1;
         }
     }
@@ -34,7 +34,11 @@ internal static class Program
         var state = new AppState(config, store, repository);
         var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
         var serverOnly = args.Contains("--server-only", StringComparer.OrdinalIgnoreCase);
+        using var parameters = new AvatarParameterService(state.Osc, Path.Combine(dataDirectory, "last-avatar-parameters.json"));
+        using var updates = new UpdateService(state, dataDirectory);
+        if (smokeTest) config.WebUiPort = VRC.OSCQuery.Extensions.GetAvailableTcpPort();
         if (!smokeTest && !serverOnly) state.Osc.RestartAsync().GetAwaiter().GetResult();
+        if (!smokeTest && !serverOnly) parameters.Start();
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Logging.ClearProviders(); builder.Logging.AddDebug();
@@ -42,9 +46,9 @@ internal static class Program
         builder.WebHost.UseUrls($"http://{config.WebUiBind}:{config.WebUiPort}");
         var app = builder.Build();
         var templateRoot = Path.Combine(AppContext.BaseDirectory, "Web", "Templates");
-        app.MapVrcCounter(state, new HtmlRenderer(state, templateRoot));
+        app.MapVrcCounter(state, new HtmlRenderer(state, templateRoot), parameters, updates);
         try { app.StartAsync().GetAwaiter().GetResult(); }
-        catch (Exception ex) { MessageBox.Show($"Could not start the web interface on {config.WebUiBind}:{config.WebUiPort}.\n\n{ex.Message}", "VRChat Counter", MessageBoxButtons.OK, MessageBoxIcon.Error); state.Osc.DisposeAsync().AsTask().GetAwaiter().GetResult(); repository.DisposeAsync().AsTask().GetAwaiter().GetResult(); return; }
+        catch (Exception ex) { if (!smokeTest) MessageBox.Show($"Could not start the web interface on {config.WebUiBind}:{config.WebUiPort}.\n\n{ex.Message}", "VRChat Counter", MessageBoxButtons.OK, MessageBoxIcon.Error); Environment.ExitCode = 1; state.Osc.DisposeAsync().AsTask().GetAwaiter().GetResult(); repository.DisposeAsync().AsTask().GetAwaiter().GetResult(); return; }
 
         var navigationHost = config.WebUiBind is "0.0.0.0" or "::" or "*" ? "127.0.0.1" : config.WebUiBind;
         var url = $"http://{navigationHost}:{config.WebUiPort}/";
@@ -62,18 +66,23 @@ internal static class Program
         }
         else if (config.WebviewEnabled)
         {
-            using var form = new MainForm(state, config, url); Application.Run(form);
+            using var form = new MainForm(state, config, url);
+            updates.RequestExit = () => { if (!form.IsDisposed) form.BeginInvoke((Action)(() => form.Close())); };
+            updates.Start();
+            Application.Run(form);
+            updates.RequestExit = null;
         }
         else
         {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             MessageBox.Show("The VRChat Counter is running in your browser. Click OK to stop it.", "VRChat Counter");
         }
-        store.FlushAsync(state.Snapshot()).GetAwaiter().GetResult();
         state.Osc.DisposeAsync().AsTask().GetAwaiter().GetResult();
         app.StopAsync().GetAwaiter().GetResult();
         app.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        store.CloseAsync(state.Snapshot()).GetAwaiter().GetResult();
         repository.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        updates.LaunchInstallerIfReady();
     }
 
     private static string ResolveDataDirectory(string[] args)

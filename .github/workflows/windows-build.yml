@@ -1,0 +1,73 @@
+name: Windows download
+
+on:
+  push:
+    branches: [main, agent/graph-dashboard-rewrite]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish portable Windows app with bundled runtime
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = ([xml](Get-Content src/VrcCounter/VrcCounter.csproj)).Project.PropertyGroup.Version
+            if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Release tag must match the project Version.' }
+          }
+          dotnet publish src/VrcCounter/VrcCounter.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -o package/VRChat-OSC-Counter
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item packaging/START-HERE.txt package/VRChat-OSC-Counter/
+      - name: Run regression tests
+        run: dotnet test VrcCounter.slnx -c Release
+      - name: Smoke test packaged executable with fresh data
+        shell: pwsh
+        run: |
+          $dataPath = Join-Path $env:RUNNER_TEMP 'counter-smoke'
+          New-Item -ItemType Directory -Path $dataPath -Force | Out-Null
+          $exe = (Resolve-Path package/VRChat-OSC-Counter/VrcCounter.exe).Path
+          $process = Start-Process $exe -ArgumentList @('--smoke-test', '--data-dir', ('"' + $dataPath + '"')) -PassThru -WindowStyle Hidden
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Packaged app smoke test timed out' }
+          if ($process.ExitCode -ne 0) { throw "Smoke test failed: $($process.ExitCode)" }
+      - name: Check package and create download
+        shell: pwsh
+        run: |
+          $privateFiles = Get-ChildItem package -Recurse -File | Where-Object { $_.Name -match '\.(sqlite3?|db)(-wal|-shm)?$|vrc_multi_param_counter\.config\.json|last-avatar-parameters\.json' }
+          if ($privateFiles) { throw 'Runtime data found in release package' }
+          Compress-Archive -Path package/VRChat-OSC-Counter -DestinationPath VRChat-OSC-Counter-Windows-x64.zip
+          $hash = (Get-FileHash VRChat-OSC-Counter-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  VRChat-OSC-Counter-Windows-x64.zip" | Set-Content SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VRChat-OSC-Counter-Windows-x64
+          path: |
+            VRChat-OSC-Counter-Windows-x64.zip
+            SHA256SUMS.txt
+          retention-days: 30
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VRChat-OSC-Counter-Windows-x64
+      - name: Publish downloadable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" VRChat-OSC-Counter-Windows-x64.zip SHA256SUMS.txt --verify-tag --title "VRChat OSC Counter $RELEASE_TAG" --notes "Download VRChat-OSC-Counter-Windows-x64.zip, extract the whole folder, then open VrcCounter.exe. The .NET runtime is included. See START-HERE.txt for setup and updating."
