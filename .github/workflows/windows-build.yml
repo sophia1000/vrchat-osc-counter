@@ -22,9 +22,15 @@ jobs:
       - name: Publish portable Windows app with bundled runtime
         shell: pwsh
         run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = ([xml](Get-Content src/VrcCounter/VrcCounter.csproj)).Project.PropertyGroup.Version
+            if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Release tag must match the project Version.' }
+          }
           dotnet publish src/VrcCounter/VrcCounter.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -o package/VRChat-OSC-Counter
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item packaging/START-HERE.txt package/VRChat-OSC-Counter/
+      - name: Run regression tests
+        run: dotnet test VrcCounter.slnx -c Release
       - name: Smoke test packaged executable with fresh data
         shell: pwsh
         run: |

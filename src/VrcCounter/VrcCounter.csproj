@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <Version>1.1.0</Version>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Platforms>AnyCPU;x64</Platforms>
@@ -20,6 +21,7 @@
 
   <ItemGroup>
     <Content Include="Web\Templates\*.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Updater\Install-Update.ps1" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="RemoveUnusedWebViewWpf" BeforeTargets="ResolveAssemblyReferences">

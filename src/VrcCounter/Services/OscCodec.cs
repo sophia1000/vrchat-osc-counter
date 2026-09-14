@@ -101,6 +101,8 @@ public sealed class OscService : IAsyncDisposable
     private readonly SemaphoreSlim _restartGate = new(1, 1);
     private CancellationTokenSource? _listenerCts;
     private Task? _listener;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, Task> _pendingEvents = new();
+    private long _eventId;
     private Socket? _senderSocket;
     private OscWriter? _senderWriter;
     private IPEndPoint? _output;
@@ -113,6 +115,8 @@ public sealed class OscService : IAsyncDisposable
     private string _lastSendError = "";
     private string _listenerError = "";
     private string _oscQueryError = "";
+    private string? _currentAvatarId;
+    public string? CurrentAvatarId => Volatile.Read(ref _currentAvatarId);
     public int? OscQueryTcpPort { get; private set; }
     public bool OscQueryRunning => _oscQuery is not null;
     public string SelectedTransport => _state.Read(c => c.OscTransport);
@@ -244,6 +248,7 @@ public sealed class OscService : IAsyncDisposable
         try
         {
             StopOscQuery();
+            Volatile.Write(ref _currentAvatarId, null);
             Volatile.Write(ref _listenerPort, 0);
             Volatile.Write(ref _listenerError, "");
             Volatile.Write(ref _oscQueryError, "");
@@ -284,6 +289,9 @@ public sealed class OscService : IAsyncDisposable
                     .WithDefaults()
                     .Build();
 
+                _oscQuery.AddEndpoint("/avatar/change", "s", Attributes.AccessValues.WriteOnly,
+                    description: "Track the currently loaded avatar for the parameter browser");
+
                 foreach (var counter in cfg.Counters.Values
                              .Where(c => !string.IsNullOrWhiteSpace(c.Address))
                              .GroupBy(c => c.Address, StringComparer.Ordinal)
@@ -311,6 +319,16 @@ public sealed class OscService : IAsyncDisposable
     private void StopOscQuery()
     {
         lock (_oscQueryGate) StopOscQueryLocked();
+    }
+
+    public OSCQueryServiceProfile[] GetQueryServices(bool refresh)
+    {
+        lock (_oscQueryGate)
+        {
+            if (_oscQuery is null) return [];
+            if (refresh) _oscQuery.RefreshServices();
+            return _oscQuery.GetOSCQueryServices().ToArray();
+        }
     }
 
     private void StopOscQueryLocked()
@@ -347,7 +365,22 @@ public sealed class OscService : IAsyncDisposable
                 while (!token.IsCancellationRequested)
                 {
                     var result = await udp.ReceiveAsync(token);
-                    foreach (var message in OscCodec.Decode(result.Buffer)) _ = _state.HandleOscAsync(message.Address, message.Values);
+                    foreach (var message in OscCodec.Decode(result.Buffer))
+                    {
+                        if (message.Address == "/avatar/change" && message.Values.FirstOrDefault() is string avatarId)
+                            Volatile.Write(ref _currentAvatarId, avatarId);
+                        else
+                        {
+                            var id = Interlocked.Increment(ref _eventId);
+                            var task = _state.HandleOscAsync(message.Address, message.Values);
+                            _pendingEvents[id] = task;
+                            _ = task.ContinueWith(completed =>
+                            {
+                                _pendingEvents.TryRemove(id, out _);
+                                if (completed.IsFaulted) Console.Error.WriteLine($"[OSC] Event processing failed: {completed.Exception}");
+                            }, TaskScheduler.Default);
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException) { firstAttempt.TrySetResult(false); break; }
@@ -366,6 +399,7 @@ public sealed class OscService : IAsyncDisposable
     {
         StopOscQuery();
         if (_listenerCts is not null) { await _listenerCts.CancelAsync(); if (_listener is not null) try { await _listener; } catch { } _listenerCts.Dispose(); }
+        await Task.WhenAll(_pendingEvents.Values);
         lock (_sendGate)
         {
             _senderSocket?.Dispose();

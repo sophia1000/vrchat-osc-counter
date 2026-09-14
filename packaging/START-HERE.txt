@@ -2,7 +2,8 @@ VRChat OSC Counter for Windows x64
 
 1. Extract the entire ZIP into a writable folder, such as Documents.
 2. Open VrcCounter.exe inside that folder. Keep the other files beside it.
-3. Enable OSC in VRChat and configure counters for your avatar's parameters.
+3. Enable OSC in VRChat. Click + Counter and search your current avatar's
+   parameters, select one, configure its trigger, then save.
 
 No Python, developer tools, or separate .NET installation is required.
 Microsoft Edge WebView2 Runtime is required and is normally already installed
@@ -11,7 +12,13 @@ https://developer.microsoft.com/microsoft-edge/webview2/
 
 Settings and history are created on first run. No personal data is included.
 Keep vrc_multi_param_counter.config.json and vrc_counter_events.sqlite3.
-Before updating, close the app and back up these files, including any matching
+The desktop app checks GitHub for stable updates automatically. Click Install
+and restart in the App updates section to update. Downloads are checksum-verified
+and startup-tested. Settings and history are kept; application files are backed
+up in %LOCALAPPDATA%\VRChatCounter\Updates. Counting pauses during restart.
+Automatic checks can be disabled in Global settings.
+
+For manual updates, close the app and back up these files, including any matching
 -wal and -shm files. Extract the new download over the existing application
 folder after closing the app. Do not delete your data files.
 

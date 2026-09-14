@@ -19,7 +19,12 @@ public sealed class CounterTests
     [Fact]
     public async Task ConfigStore_LoadsSuppliedModernSchemaWithoutDroppingFeatures()
     {
-        var source = FindWorkspaceFile("vrc_multi_param_counter.config.json"); var dir = NewTempDir(); var path = Path.Combine(dir, Path.GetFileName(source)); File.Copy(source, path);
+        var dir = NewTempDir(); var path = Path.Combine(dir, "config.json");
+        // Synthetic schema fixture: tests must never depend on or publish a user's settings.
+        var original = EmptyConfig();
+        for (var i = 1; i <= 10; i++) { var name = $"Test {i}"; original.Counters[name] = CounterConfig.Create(name, $"/avatar/parameters/Test{i}"); original.CounterOrder.Add(name); }
+        for (var i = 2; i <= 4; i++) { var id = $"g{i}"; original.Graphs[id] = GraphConfig.Create($"Test graph {i}"); original.GraphOrder.Add(id); }
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(original, JsonOptions.Default));
         try
         {
             var store = new ConfigStore(path); var cfg = await store.LoadAsync();
@@ -301,11 +306,6 @@ public sealed class CounterTests
 
     private static AppConfig EmptyConfig() => new() { Counters = [], CounterOrder = [], Graphs = new() { ["g1"] = GraphConfig.Create("Test") }, GraphOrder = ["g1"] };
     private static string NewTempDir() { var path = Path.Combine(Path.GetTempPath(), "VrcCounterTests", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(path); return path; }
-    private static string FindWorkspaceFile(string name)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory); while (dir is not null) { var path = Path.Combine(dir.FullName, name); if (File.Exists(path)) return path; dir = dir.Parent; }
-        throw new FileNotFoundException(name);
-    }
 
     private sealed class Fixture : IAsyncDisposable
     {

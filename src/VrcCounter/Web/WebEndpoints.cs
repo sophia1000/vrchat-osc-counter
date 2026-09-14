@@ -7,8 +7,20 @@ namespace VrcCounter.Web;
 
 public static class WebEndpoints
 {
-    public static void MapVrcCounter(this WebApplication app, AppState state, HtmlRenderer html)
+    public static void MapVrcCounter(this WebApplication app, AppState state, HtmlRenderer html, AvatarParameterService parameters, UpdateService updates)
     {
+        app.MapGet("/api/avatar-parameters", async (HttpRequest req, CancellationToken token) =>
+            Results.Json(await parameters.GetAsync(IsTrue(req.Query["refresh"]), token)));
+        app.MapGet("/api/updates", () => Results.Json(updates.Status));
+        app.MapPost("/api/updates/check", async (HttpRequest req, CancellationToken token) =>
+            IsLocalUpdateRequest(req, updates.Token) ? Results.Json(await updates.CheckAsync(token)) : Results.StatusCode(403));
+        app.MapPost("/api/updates/install", async (HttpContext context) =>
+        {
+            if (!IsLocalUpdateRequest(context.Request, updates.Token)) return Results.StatusCode(403);
+            var status = await updates.PrepareAsync(context.RequestAborted);
+            if (status.Phase == "ready") context.Response.OnCompleted(() => { updates.RequestExit?.Invoke(); return Task.CompletedTask; });
+            return Results.Json(status);
+        });
         app.MapGet("/", () => Results.Content(html.Index(), "text/html"));
         app.MapGet("/graph", () => Results.Content(html.Graph(), "text/html"));
         app.MapGet("/events", (HttpResponse response, CancellationToken token) => state.Sse.StreamAsync(response, token));
@@ -86,6 +98,7 @@ public static class WebEndpoints
             var changes = state.UpdateGlobal(c =>
             {
                 if (f.ContainsKey("osc_transport")) c.OscTransport = f["osc_transport"] == AppConfig.LegacyOscTransport ? AppConfig.LegacyOscTransport : AppConfig.OscQueryTransport;
+                if (f.ContainsKey("auto_check_updates")) c.AutoCheckUpdates = IsTrue(f["auto_check_updates"]);
                 c.OscInIp = ValueOr(f["osc_in_ip"], c.OscInIp); c.OscInPort = (int)ParseLong(f["osc_in_port"], c.OscInPort); c.OscOutIp = ValueOr(f["osc_out_ip"], c.OscOutIp); c.OscOutPort = (int)ParseLong(f["osc_out_port"], c.OscOutPort);
                 c.WebUiBind = ValueOr(f["web_ui_bind"], c.WebUiBind); c.WebUiPort = (int)ParseLong(f["web_ui_port"], c.WebUiPort); c.SaveThrottleMs = (int)ParseLong(f["save_throttle_ms"], c.SaveThrottleMs);
                 var mode = f["chatbox_mode"].ToString(); c.ChatboxMode = mode is "modern" or "legacy2" or "both" ? mode : "modern"; c.ChatboxPerMinuteLimit = (int)ParseLong(f["chatbox_per_minute_limit"], c.ChatboxPerMinuteLimit); c.ChatboxMinIntervalMs = (int)ParseLong(f["chatbox_min_interval_ms"], c.ChatboxMinIntervalMs); c.ChatboxAutoClearMs = (int)ParseLong(f["chatbox_auto_clear_ms"], c.ChatboxAutoClearMs);
@@ -157,6 +170,17 @@ public static class WebEndpoints
             },
             oscquery = new { running = state.Osc.OscQueryRunning, tcpPort = state.Osc.OscQueryTcpPort }
         }));
+    }
+
+    private static bool IsLocalUpdateRequest(HttpRequest request, string token)
+    {
+        var remote = request.HttpContext.Connection.RemoteIpAddress;
+        var host = request.Host.Host;
+        var localHost = host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || (System.Net.IPAddress.TryParse(host, out var address) && System.Net.IPAddress.IsLoopback(address));
+        return remote is not null && System.Net.IPAddress.IsLoopback(remote) && localHost
+            && request.Headers["Origin"] == $"{request.Scheme}://{request.Host}"
+            && request.Headers["X-Update-Token"] == token;
     }
 
     private static bool IsTrue(string? value) => value is "1" or "true" or "True" or "on";

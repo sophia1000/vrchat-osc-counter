@@ -12,6 +12,7 @@ public sealed class AppConfig
 
     [JsonPropertyName("config_version")] public int ConfigVersion { get; set; } = CurrentConfigVersion;
     [JsonPropertyName("osc_transport")] public string OscTransport { get; set; } = OscQueryTransport;
+    [JsonPropertyName("auto_check_updates")] public bool AutoCheckUpdates { get; set; } = true;
     [JsonPropertyName("osc_in_ip")] public string OscInIp { get; set; } = "127.0.0.1";
     [JsonPropertyName("osc_in_port")] public int OscInPort { get; set; } = 9001;
     [JsonPropertyName("osc_out_ip")] public string OscOutIp { get; set; } = "127.0.0.1";
