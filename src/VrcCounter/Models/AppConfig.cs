@@ -37,7 +37,6 @@ public sealed class AppConfig
     [JsonPropertyName("chatbox_auto_clear_ms")] public int ChatboxAutoClearMs { get; set; } = 10000;
     [JsonPropertyName("chatbox_enabled_by_default")] public bool ChatboxEnabledByDefault { get; set; } = true;
     [JsonPropertyName("chatbox_notify_by_default")] public bool ChatboxNotifyByDefault { get; set; } = true;
-    [JsonPropertyName("counters_compact")] public bool CountersCompact { get; set; }
     [JsonPropertyName("home_graphs_columns")] public int HomeGraphsColumns { get; set; } = 2;
     [JsonPropertyName("counters")] public Dictionary<string, CounterConfig> Counters { get; set; } = [];
     [JsonPropertyName("counter_order")] public List<string> CounterOrder { get; set; } = [];

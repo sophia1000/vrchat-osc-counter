@@ -13,6 +13,7 @@ Features include:
 - VRChat Chatbox templates, aggregation, rate limiting, and auto-clear
 - A native Windows shell powered by WebView2
 - Search the current avatar's OSC parameters, with type and value previews
+- Compact counter cards with drag ordering and chatbox toggles
 - Automatic GitHub release checks and one-click verified updates
 
 OSCQuery is the default input mode. It runs the UDP OSC receiver and advertises the input
@@ -43,9 +44,14 @@ With VRChat running and OSC enabled, the picker discovers the local VRChat clien
 OSCQuery and displays its current avatar's OSC-exposed parameters. Search by name,
 address, or type and click a result to fill the address. New counters also get the
 parameter's name unless you have entered your own. The list refreshes as avatars change.
+The app saves the last detected avatar's parameter definitions automatically while
+running, even when the editor is closed. After VRChat closes, or after restarting the
+counter app, the picker uses that saved list for offline setup. Offline lists are
+clearly labeled and do not show stale live values. Open VRChat with OSCQuery enabled
+at least once while this version of the counter is running to capture an avatar.
 Choose your trigger mode and thresholds, then save.
 
-The picker uses OSCQuery mode. Legacy mode still supports manually entered addresses.
+Live discovery uses OSCQuery mode. Legacy mode supports the saved offline list and manually entered addresses.
 It cannot list animator parameters that VRChat does not expose through OSC. Input-only
 and non-numeric parameters are shown but cannot be selected as counter inputs.
 
@@ -97,7 +103,8 @@ dotnet run --project .\src\VrcCounter\VrcCounter.csproj --configuration Release 
 
 On first launch, the application creates a local `vrc_multi_param_counter.config.json`
 and `vrc_counter_events.sqlite3`. These files contain personal settings and history and
-are intentionally excluded from Git.
+are intentionally excluded from Git. The offline avatar cache (`last-avatar-parameters.json`)
+is also local-only and excluded from releases and Git.
 
 ## Tests
 

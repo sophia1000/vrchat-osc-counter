@@ -8,11 +8,11 @@
 <label>Name<input required name="name" value="{{name}}"></label>
 <section class="picker" aria-label="Avatar parameter browser">
 <header><h2>Find an avatar parameter</h2><button id="refreshParameters" class="ghost" type="button">Refresh</button></header>
-<label>Search current avatar<input id="parameterSearch" type="search" placeholder="Search names or OSC addresses..." autocomplete="off"></label>
+<label>Search avatar parameters<input id="parameterSearch" type="search" placeholder="Search names or OSC addresses..." autocomplete="off"></label>
 <p id="parameterStatus" class="muted" role="status">Looking for VRChat...</p>
 <div id="parameterList" class="parameter-list" aria-label="Available parameters"></div>
 <p id="parameterFeedback" class="feedback" role="status"></p>
-<p class="muted">Shows parameters exposed by VRChat over OSC, including built-in parameters. Non-numeric or input-only parameters cannot drive a counter. Manual entry is always available below.</p>
+<p class="muted">Shows live parameters while VRChat is open, or the last saved avatar when offline, including built-in parameters. Non-numeric or input-only parameters cannot drive a counter. Manual entry is always available below.</p>
 </section>
 <label>OSC address<input required name="address" value="{{address}}"></label>
 <div class="row"><label>Count<input type="number" name="count" value="{{count}}"></label><label>Trigger mode<select name="trigger_mode"><option value="threshold" {{threshold_mode}}>Threshold / hysteresis</option><option value="int_eq" {{int_mode}}>Integer equals</option></select></label></div>

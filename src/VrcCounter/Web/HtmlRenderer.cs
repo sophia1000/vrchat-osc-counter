@@ -14,13 +14,12 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
 
     public string Index()
     {
-        var cfg = state.Snapshot(); var rows = new StringBuilder(); var tiles = new StringBuilder();
+        var cfg = state.Snapshot(); var tiles = new StringBuilder();
         foreach (var name in cfg.CounterOrder)
         {
             if (!cfg.Counters.TryGetValue(name, out var c)) continue; var enc = Uri.EscapeDataString(name);
             var pressed = c.SendChatbox ? "true" : "false";
             var on = c.SendChatbox ? " on" : "";
-            rows.Append($"<tr draggable='true' data-name='{H(name)}'><td class='drag'>⋮⋮</td><td><span class='pill'>{H(name)}</span></td><td><code>{H(c.Address)}</code></td><td class='count'>{c.Count:N0}</td><td><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button></td><td><a class='btn sm' href='/edit/{enc}'>Edit</a></td></tr>");
             tiles.Append($"<div class='tile' draggable='true' data-name='{H(name)}'><div><b>{H(name)}</b><strong class='count'>{c.Count:N0}</strong></div><footer><button type='button' class='chatToggle{on}' role='switch' aria-checked='{pressed}' title='Toggle chatbox output'><span></span>Chatbox</button><a class='btn sm' href='/edit/{enc}'>Edit</a></footer></div>");
         }
         var graphs = new StringBuilder(); var graphIndex = 0;
@@ -36,7 +35,7 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
         }
         return Replace(Load("index.html"), new()
         {
-            ["rows"] = rows.Length > 0 ? rows.ToString() : "<tr><td colspan='6'><em>No counters yet.</em></td></tr>", ["tiles"] = tiles.ToString(), ["graphs"] = graphs.ToString(),
+            ["tiles"] = tiles.Length > 0 ? tiles.ToString() : "<p class='muted'>No counters yet. Add a counter to get started.</p>", ["graphs"] = graphs.ToString(),
             ["oscquery_transport"] = Selected(cfg.OscTransport == AppConfig.OscQueryTransport), ["legacy_osc_transport"] = Selected(cfg.OscTransport == AppConfig.LegacyOscTransport),
             ["updates_on"] = Selected(cfg.AutoCheckUpdates), ["updates_off"] = Selected(!cfg.AutoCheckUpdates),
             ["osc_in_ip"] = H(cfg.OscInIp), ["osc_in_port"] = cfg.OscInPort.ToString(), ["osc_out_ip"] = H(cfg.OscOutIp), ["osc_out_port"] = cfg.OscOutPort.ToString(),
@@ -45,7 +44,6 @@ public sealed class HtmlRenderer(AppState state, string templateRoot)
             ["per_minute"] = cfg.ChatboxPerMinuteLimit.ToString(), ["min_interval"] = cfg.ChatboxMinIntervalMs.ToString(), ["auto_clear"] = cfg.ChatboxAutoClearMs.ToString(),
             ["default_chat_on"] = Selected(cfg.ChatboxEnabledByDefault), ["default_chat_off"] = Selected(!cfg.ChatboxEnabledByDefault),
             ["default_notify_on"] = Selected(cfg.ChatboxNotifyByDefault), ["default_notify_off"] = Selected(!cfg.ChatboxNotifyByDefault),
-            ["compact_on"] = Selected(cfg.CountersCompact), ["compact_off"] = Selected(!cfg.CountersCompact), ["table_display"] = cfg.CountersCompact ? "none" : "block", ["grid_display"] = cfg.CountersCompact ? "grid" : "none",
             ["col1"] = Selected(cfg.HomeGraphsColumns == 1), ["col2"] = Selected(cfg.HomeGraphsColumns == 2), ["col3"] = Selected(cfg.HomeGraphsColumns == 3), ["columns"] = cfg.HomeGraphsColumns.ToString()
         });
     }

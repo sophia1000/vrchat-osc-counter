@@ -256,7 +256,7 @@ public static class UpdatePackage
             || Regex.IsMatch(p, @"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\.|$)", RegexOptions.IgnoreCase)))
             throw new InvalidDataException("Unsafe package path.");
         if (parts.Any(p => p.Equals("python", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".WebView2", StringComparison.OrdinalIgnoreCase))
-            || Regex.IsMatch(parts[^1], @"\.(sqlite3?|db)(-wal|-shm)?$|^vrc_multi_param_counter\.config\.json$", RegexOptions.IgnoreCase))
+            || Regex.IsMatch(parts[^1], @"\.(sqlite3?|db)(-wal|-shm)?$|^vrc_multi_param_counter\.config\.json$|^last-avatar-parameters\.json", RegexOptions.IgnoreCase))
             throw new InvalidDataException("The package contains personal runtime data.");
     }
 }

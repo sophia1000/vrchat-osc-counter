@@ -35,7 +35,7 @@ try {
     }
     # Validate every destination and make the entire backup before changing any file.
     $operations = foreach ($relative in $plan.Files) {
-        if ($relative -match '(^|[/\\])\.\.?([/\\]|$)|[:*?"<>|]|\.(sqlite3?|db)(-wal|-shm)?$|vrc_multi_param_counter\.config\.json') { throw 'Unsafe file in update plan.' }
+        if ($relative -match '(^|[/\\])\.\.?([/\\]|$)|[:*?"<>|]|\.(sqlite3?|db)(-wal|-shm)?$|vrc_multi_param_counter\.config\.json|last-avatar-parameters\.json') { throw 'Unsafe file in update plan.' }
         $source = Resolve-Child $plan.PayloadDirectory $relative
         $target = Resolve-Child $plan.InstallDirectory $relative
         $backup = Resolve-Child $plan.BackupDirectory $relative

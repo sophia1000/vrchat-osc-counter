@@ -102,7 +102,7 @@ public static class WebEndpoints
                 c.OscInIp = ValueOr(f["osc_in_ip"], c.OscInIp); c.OscInPort = (int)ParseLong(f["osc_in_port"], c.OscInPort); c.OscOutIp = ValueOr(f["osc_out_ip"], c.OscOutIp); c.OscOutPort = (int)ParseLong(f["osc_out_port"], c.OscOutPort);
                 c.WebUiBind = ValueOr(f["web_ui_bind"], c.WebUiBind); c.WebUiPort = (int)ParseLong(f["web_ui_port"], c.WebUiPort); c.SaveThrottleMs = (int)ParseLong(f["save_throttle_ms"], c.SaveThrottleMs);
                 var mode = f["chatbox_mode"].ToString(); c.ChatboxMode = mode is "modern" or "legacy2" or "both" ? mode : "modern"; c.ChatboxPerMinuteLimit = (int)ParseLong(f["chatbox_per_minute_limit"], c.ChatboxPerMinuteLimit); c.ChatboxMinIntervalMs = (int)ParseLong(f["chatbox_min_interval_ms"], c.ChatboxMinIntervalMs); c.ChatboxAutoClearMs = (int)ParseLong(f["chatbox_auto_clear_ms"], c.ChatboxAutoClearMs);
-                c.ChatboxEnabledByDefault = IsTrue(f["chatbox_enabled_by_default"]); c.ChatboxNotifyByDefault = IsTrue(f["chatbox_notify_by_default"]); c.CountersCompact = IsTrue(f["counters_compact"]); c.HomeGraphsColumns = Math.Clamp((int)ParseLong(f["home_graphs_columns"], c.HomeGraphsColumns), 1, 3);
+                c.ChatboxEnabledByDefault = IsTrue(f["chatbox_enabled_by_default"]); c.ChatboxNotifyByDefault = IsTrue(f["chatbox_notify_by_default"]); c.HomeGraphsColumns = Math.Clamp((int)ParseLong(f["home_graphs_columns"], c.HomeGraphsColumns), 1, 3);
             });
             if (changes.RebuildOutput) state.Osc.RebuildOutput();
             if (changes.RestartInput || forceReconnect) await state.Osc.RestartAsync();

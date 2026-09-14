@@ -34,10 +34,11 @@ internal static class Program
         var state = new AppState(config, store, repository);
         var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
         var serverOnly = args.Contains("--server-only", StringComparer.OrdinalIgnoreCase);
-        using var parameters = new AvatarParameterService(state.Osc);
+        using var parameters = new AvatarParameterService(state.Osc, Path.Combine(dataDirectory, "last-avatar-parameters.json"));
         using var updates = new UpdateService(state, dataDirectory);
         if (smokeTest) config.WebUiPort = VRC.OSCQuery.Extensions.GetAvailableTcpPort();
         if (!smokeTest && !serverOnly) state.Osc.RestartAsync().GetAwaiter().GetResult();
+        if (!smokeTest && !serverOnly) parameters.Start();
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Logging.ClearProviders(); builder.Logging.AddDebug();

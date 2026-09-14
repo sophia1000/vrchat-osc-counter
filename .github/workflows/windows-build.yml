@@ -43,7 +43,7 @@ jobs:
       - name: Check package and create download
         shell: pwsh
         run: |
-          $privateFiles = Get-ChildItem package -Recurse -File | Where-Object { $_.Name -match '\.(sqlite3?|db)(-wal|-shm)?$|vrc_multi_param_counter\.config\.json$' }
+          $privateFiles = Get-ChildItem package -Recurse -File | Where-Object { $_.Name -match '\.(sqlite3?|db)(-wal|-shm)?$|vrc_multi_param_counter\.config\.json|last-avatar-parameters\.json' }
           if ($privateFiles) { throw 'Runtime data found in release package' }
           Compress-Archive -Path package/VRChat-OSC-Counter -DestinationPath VRChat-OSC-Counter-Windows-x64.zip
           $hash = (Get-FileHash VRChat-OSC-Counter-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()

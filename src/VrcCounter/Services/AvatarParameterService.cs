@@ -8,8 +8,8 @@ namespace VrcCounter.Services;
 public sealed record AvatarParameter(string Name, string Address, string Type, string Value, bool CanCount);
 public sealed record AvatarParameterList(string Status, string Message, string? AvatarId, IReadOnlyList<AvatarParameter> Parameters);
 
-/// <summary>Reads VRChat's current OSCQuery tree, never an arbitrary saved avatar.</summary>
-public sealed class AvatarParameterService(OscService osc) : IDisposable
+/// <summary>Reads the live avatar and retains its parameter definitions for offline setup.</summary>
+public sealed class AvatarParameterService(OscService osc, string? cachePath = null) : IDisposable
 {
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false })
         { Timeout = TimeSpan.FromSeconds(3), MaxResponseContentBufferSize = 8 * 1024 * 1024 };
@@ -17,6 +17,56 @@ public sealed class AvatarParameterService(OscService osc) : IDisposable
     private AvatarParameterList? _cached;
     private DateTimeOffset _readAt;
     private string? _avatarAtRead;
+    private SavedAvatar? _lastKnown = LoadSaved(cachePath);
+    private readonly CancellationTokenSource _stop = new();
+    private Task? _background;
+
+    public void Start() => _background ??= Task.Run(async () =>
+    {
+        try
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                try { await GetAsync(false, _stop.Token); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { Console.Error.WriteLine($"[Parameters] {ex.Message}"); }
+                await Task.Delay(TimeSpan.FromSeconds(10), _stop.Token);
+            }
+        }
+        catch (OperationCanceledException) { }
+    });
+
+    private sealed record SavedAvatar(string? AvatarId, AvatarParameter[] Parameters, DateTimeOffset SeenAt);
+    private static SavedAvatar? LoadSaved(string? path)
+    {
+        try
+        {
+            if (path is null || !File.Exists(path) || new FileInfo(path).Length > 8 * 1024 * 1024) return null;
+            var saved = JsonSerializer.Deserialize<SavedAvatar>(File.ReadAllText(path));
+            return saved?.Parameters is not null && saved.Parameters.All(p => p is not null && p.Address?.StartsWith("/avatar/parameters/", StringComparison.Ordinal) == true && p.Name is not null && p.Type is not null)
+                ? saved : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
+    private AvatarParameterList Offline(string message) => _lastKnown is { } saved
+        ? new("cached", $"Offline: showing your last detected avatar (saved {saved.SeenAt.LocalDateTime:g}). Parameter values are unavailable until VRChat reconnects.", saved.AvatarId, saved.Parameters)
+        : new("offline", message + " No avatar has been saved yet. Open VRChat with OSCQuery enabled once to capture its parameters.", null, []);
+
+    private async Task RememberAsync(AvatarParameterList live, CancellationToken token)
+    {
+        if (live.AvatarId is null && live.Parameters.Count == 0) return;
+        // Values are live observations, not reliable offline defaults.
+        var definitions = live.Parameters.Select(p => p with { Value = "" }).ToArray();
+        if (_lastKnown is { } old && old.AvatarId == live.AvatarId && old.Parameters.SequenceEqual(definitions)) return;
+        _lastKnown = new(live.AvatarId, definitions, DateTimeOffset.UtcNow);
+        if (cachePath is null) return;
+        try
+        {
+            await File.WriteAllTextAsync(cachePath + ".tmp", JsonSerializer.Serialize(_lastKnown), token);
+            File.Move(cachePath + ".tmp", cachePath, true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Console.Error.WriteLine($"[Parameters] Could not save offline avatar: {ex.Message}"); }
+    }
 
     public async Task<AvatarParameterList> GetAsync(bool refresh, CancellationToken token)
     {
@@ -24,7 +74,7 @@ public sealed class AvatarParameterService(OscService osc) : IDisposable
         try
         {
             if (!osc.OscQueryRunning)
-                return new("offline", "Use OSCQuery in Global settings to browse the live avatar. You can still enter an OSC address manually.", null, []);
+                return Offline("Use OSCQuery in Global settings to browse the live avatar.");
             var avatar = osc.CurrentAvatarId;
             if (!refresh && _cached is not null && avatar == _avatarAtRead && DateTimeOffset.UtcNow - _readAt < TimeSpan.FromSeconds(3))
                 return _cached;
@@ -60,9 +110,10 @@ public sealed class AvatarParameterService(OscService osc) : IDisposable
             var live = results.Where(r => r is not null).Cast<AvatarParameterList>().ToArray();
             var chosen = live.FirstOrDefault(r => avatar is not null && r.AvatarId == avatar);
             if (chosen is null && live.Length == 1) chosen = live[0];
+            if (chosen is not null) await RememberAsync(chosen, token);
             _cached = chosen ?? (live.Length > 1
                 ? new("ambiguous", "Multiple VRChat clients were found. Switch avatar in the client you want to use, then refresh.", null, [])
-                : new("offline", "VRChat was not found. Start VRChat, enable OSC, and load an avatar. This list refreshes automatically.", null, []));
+                : Offline("VRChat was not found."));
             _readAt = DateTimeOffset.UtcNow;
             _avatarAtRead = avatar;
             return _cached;
@@ -100,5 +151,10 @@ public sealed class AvatarParameterService(OscService osc) : IDisposable
         return new("connected", sorted.Length == 0 ? "VRChat is connected, but has not exposed any avatar parameters yet." : $"{sorted.Length} OSC parameters on your current avatar. Select one to use its address.", avatarId, sorted);
     }
 
-    public void Dispose() { _http.Dispose(); _gate.Dispose(); }
+    public void Dispose()
+    {
+        _stop.Cancel();
+        _background?.GetAwaiter().GetResult();
+        _http.Dispose(); _gate.Dispose(); _stop.Dispose();
+    }
 }

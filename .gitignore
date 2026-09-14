@@ -1,5 +1,6 @@
 # Personal runtime settings and counter history
 vrc_multi_param_counter.config.json
+last-avatar-parameters.json*
 *.sqlite
 *.sqlite3
 *.sqlite3-shm

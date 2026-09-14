@@ -47,6 +47,7 @@ public sealed class UpdateAndParameterTests
     [InlineData("Web/CON.txt")]
     [InlineData("vrc_multi_param_counter.config.json")]
     [InlineData("events.sqlite3-wal")]
+    [InlineData("last-avatar-parameters.json")]
     [InlineData("python/old.py")]
     [InlineData("VrcCounter.exe.WebView2/settings")]
     public void PackagePaths_RejectTraversalAndPersonalData(string path)
@@ -107,13 +108,17 @@ public sealed class UpdateAndParameterTests
         var state = new AppState(cfg, new ConfigStore(Path.Combine(temp.Path, "config.json")), repository);
         await using var osc = state.Osc;
         await osc.RestartAsync();
-        using var browser = new AvatarParameterService(osc);
+        var cachePath = Path.Combine(temp.Path, "last-avatar-parameters.json");
+        using var browser = new AvatarParameterService(osc, cachePath);
         using var fakeVrchat = new OSCQueryServiceBuilder().WithServiceName("VRChat-Client-CounterTest-" + Guid.NewGuid().ToString("N"))
             .WithHostIP(IPAddress.Loopback).WithOscIP(IPAddress.Loopback)
             .WithTcpPort(VRC.OSCQuery.Extensions.GetAvailableTcpPort()).WithUdpPort(VRC.OSCQuery.Extensions.GetAvailableUdpPort()).WithDefaults().Build();
         fakeVrchat.AddEndpoint("/avatar/change", "s", Attributes.AccessValues.ReadOnly, ["avtr_first"]);
         fakeVrchat.AddEndpoint("/avatar/parameters/Touch", "f", Attributes.AccessValues.ReadOnly, [0.8f]);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        browser.Start();
+        // Capture must work without opening the parameter editor or calling GetAsync.
+        while (!File.Exists(cachePath)) await Task.Delay(100, timeout.Token);
         AvatarParameterList first;
         do { first = await browser.GetAsync(true, timeout.Token); if (first.AvatarId == "avtr_first") break; await Task.Delay(500, timeout.Token); } while (true);
         Assert.Single(first.Parameters);
@@ -126,7 +131,51 @@ public sealed class UpdateAndParameterTests
         Assert.Equal("Poke", Assert.Single(second.Parameters).Name);
         fakeVrchat.Dispose();
         var offline = await browser.GetAsync(true, timeout.Token);
-        Assert.Empty(offline.Parameters);
+        Assert.Equal("cached", offline.Status);
+        Assert.Equal("avtr_second", offline.AvatarId);
+        Assert.Equal("Poke", Assert.Single(offline.Parameters).Name);
+        Assert.Equal("", offline.Parameters[0].Value);
+        using var reopened = new AvatarParameterService(osc, cachePath);
+        var restored = await reopened.GetAsync(true, timeout.Token);
+        Assert.Equal("cached", restored.Status);
+        Assert.Equal(offline.Parameters, restored.Parameters);
+        Assert.Equal("avtr_second", restored.AvatarId);
+    }
+
+    [Fact]
+    public async Task CorruptAvatarCache_DoesNotPreventManualSetup()
+    {
+        using var temp = new TempFolder();
+        var cache = Path.Combine(temp.Path, "last-avatar-parameters.json");
+        await File.WriteAllTextAsync(cache, "{broken json");
+        await using var repository = new EventRepository(Path.Combine(temp.Path, "events.sqlite3"));
+        await repository.InitializeAsync();
+        var state = new AppState(AppConfig.CreateDefault(), new ConfigStore(Path.Combine(temp.Path, "config.json")), repository);
+        await using var osc = state.Osc;
+        using var browser = new AvatarParameterService(osc, cache);
+        var result = await browser.GetAsync(false, CancellationToken.None);
+        Assert.Equal("offline", result.Status);
+        Assert.Empty(result.Parameters);
+        Assert.Contains("No avatar has been saved", result.Message);
+    }
+
+    [Fact]
+    public async Task HomePage_OnlyRendersCompactCardsEvenForLegacyListSettings()
+    {
+        using var temp = new TempFolder();
+        var cfg = JsonSerializer.Deserialize<AppConfig>("{\"counters_compact\":false}", JsonOptions.Default)!;
+        cfg.Normalize();
+        cfg.Counters["Test"] = CounterConfig.Create("Test"); cfg.CounterOrder.Add("Test");
+        await using var repository = new EventRepository(Path.Combine(temp.Path, "events.sqlite3"));
+        await repository.InitializeAsync();
+        var state = new AppState(cfg, new ConfigStore(Path.Combine(temp.Path, "config.json")), repository);
+        await using var osc = state.Osc;
+        var html = new VrcCounter.Web.HtmlRenderer(state, Path.Combine(AppContext.BaseDirectory, "Web", "Templates")).Index();
+        Assert.Contains("class='tile'", html);
+        Assert.DoesNotContain("counterTable", html);
+        Assert.DoesNotContain("counters_compact", html);
+        Assert.DoesNotContain("<table", html);
+        Assert.DoesNotContain("{{", html);
     }
 
     [Fact]
