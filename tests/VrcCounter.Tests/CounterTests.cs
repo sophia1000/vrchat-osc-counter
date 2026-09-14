@@ -314,6 +314,12 @@ public sealed class CounterTests
         {
             var dir = NewTempDir(); var store = new ConfigStore(Path.Combine(dir, "config.json")); var repo = new EventRepository(Path.Combine(dir, "events.sqlite3")); await repo.InitializeAsync(); return new() { DirectoryPath = dir, Repository = repo, State = new AppState(cfg, store, repo) };
         }
-        public async ValueTask DisposeAsync() { await State.Osc.DisposeAsync(); await Repository.DisposeAsync(); Directory.Delete(DirectoryPath, true); }
+        public async ValueTask DisposeAsync()
+        {
+            await State.Osc.DisposeAsync();
+            await State.ConfigStore.CloseAsync(State.Snapshot());
+            await Repository.DisposeAsync();
+            Directory.Delete(DirectoryPath, true);
+        }
     }
 }
